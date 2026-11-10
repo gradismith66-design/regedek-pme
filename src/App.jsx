@@ -178,7 +178,7 @@ export default function App() {
 
   return (<>
     <header>
-      <h1>REGEDEK · PME AUTORISÉES — REGEDEK & MINISTÈRE</h1>
+      <Brand compact />
       <div className="user-session"><span>{session.user.email} · {role}</span><button className="btn sec" onClick={() => supabase.auth.signOut()}>Déconnexion</button></div>
       <nav>
         {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
@@ -285,6 +285,13 @@ export default function App() {
   </>)
 }
 
+function Brand({ compact = false }) {
+  return <div className={`brand-lockup${compact ? ' brand-lockup-compact' : ''}`}>
+    <span className="brand-mark"><img src="/favicon.png" alt="Logo REGEDEK" /></span>
+    <span className="brand-copy"><strong>REGEDEK PME</strong><span>Gestion des PME autorisées</span></span>
+  </div>
+}
+
 function Gate({ title, children }) {
   return <main className="gate"><section className="box"><h2>{title}</h2><p>{children}</p></section></main>
 }
@@ -305,7 +312,7 @@ function SignIn({ notice, setNotice }) {
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
     setBusy(false); setNotice(error ? 'Impossible d’envoyer le lien de réinitialisation.' : 'Si ce compte existe, un lien de réinitialisation vient d’être envoyé.')
   }
-  return <main className="gate"><section className="box auth-box"><h2>Connexion à REGEDEK PME</h2>
+  return <main className="gate"><section className="box auth-box"><Brand /><h2>Connexion à votre espace</h2>
     <p>Accès réservé au personnel autorisé.</p>{notice && <p role="alert" className="notice">{notice}</p>}
     <form onSubmit={submit} className="auth-form">
       <div><label htmlFor="email">Adresse e-mail professionnelle</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div>
@@ -326,7 +333,7 @@ function PasswordRecovery({ setNotice }) {
     if (error) { setNotice('Le mot de passe n’a pas pu être modifié. Demande un nouveau lien.'); return }
     await supabase.auth.signOut()
   }
-  return <main className="gate"><section className="box auth-box"><h2>Nouveau mot de passe</h2><form onSubmit={submit} className="auth-form">
+  return <main className="gate"><section className="box auth-box"><Brand /><h2>Nouveau mot de passe</h2><form onSubmit={submit} className="auth-form">
     <div><label htmlFor="new-password">Mot de passe (12 caractères minimum)</label><input id="new-password" type="password" minLength="12" autoComplete="new-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>
     <button className="btn" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer le mot de passe'}</button>
   </form></section></main>
