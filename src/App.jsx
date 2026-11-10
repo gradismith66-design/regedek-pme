@@ -1,22 +1,50 @@
 import { useState, useEffect, useMemo } from 'react'
-import { PMES, ACHATS } from './data.js'
+import { supabase } from './supabase.js'
 import { statutExp, statutActivite } from './status.js'
-
-function useStore(key, init) {
-  const [v, setV] = useState(() => { try { return JSON.parse(localStorage.getItem(key)) ?? init } catch { return init } })
-  useEffect(() => { localStorage.setItem(key, JSON.stringify(v)) }, [key, v])
-  return [v, setV]
-}
 
 const Tag = ({ s }) => <span className={`tag ${s.cls}`}>{s.label}</span>
 const fmt = (d) => d ? d.split('-').reverse().join('/') : '—'
 const normalize = (v) => (v ?? '').toString().trim()
 const VIDE = { nom: '', type: 'MENAGE', numAut: '', dateAut: '', expAut: '', dateAgr: '', expAgr: '', contact: '', tel: '', email: '', adresse: '', communes: '', quartiers: '', statutJuridique: '', source: 'saisie manuelle', note: '' }
 
+const toPme = (p) => ({
+  id: p.id, nom: p.nom, type: p.type, numAut: p.num_aut, dateAut: p.date_aut || '', expAut: p.exp_aut || '',
+  dateAgr: p.date_agr || '', expAgr: p.exp_agr || '', contact: p.contact, fonction: p.fonction, tel: p.tel,
+  email: p.email, adresse: p.adresse, communes: p.communes, quartiers: p.quartiers,
+  statutJuridique: p.statut_juridique, source: p.source, nbAutorisations: p.nb_autorisations, note: p.note,
+})
+const toAchat = (a) => ({ id: a.id, pmeId: a.pme_id, date: a.date, qte: a.qte, detail: a.detail || [] })
+const pmePayload = (p) => ({
+  nom: p.nom.trim(), type: p.type || '', num_aut: p.numAut || '', date_aut: p.dateAut || null, exp_aut: p.expAut || null,
+  date_agr: p.dateAgr || null, exp_agr: p.expAgr || null, contact: p.contact || '', fonction: p.fonction || '',
+  tel: p.tel || '', email: p.email || '', adresse: p.adresse || '', communes: p.communes || '', quartiers: p.quartiers || '',
+  statut_juridique: p.statutJuridique || '', source: p.source || '', nb_autorisations: Number(p.nbAutorisations ?? 1), note: p.note || '',
+})
+const fetchAll = async (table, orderColumn, ascending = true) => {
+  const all = []
+  let offset = 0
+  let total = 0
+  do {
+    const { data, error, count } = await supabase.from(table).select('*', { count: 'exact' })
+      .order(orderColumn, { ascending }).range(offset, offset + 499)
+    if (error) throw error
+    all.push(...data)
+    total = count ?? all.length
+    if (!data.length) break
+    offset += data.length
+  } while (offset < total)
+  return all
+}
+
 export default function App() {
-  const [pmes, setPmes] = useStore('pmes_v2', PMES)
-  const [achats, setAchats] = useStore('achats_v2', ACHATS)
-  const [cfg, setCfg] = useStore('cfg', { alerte: 30, inactif: 90 })
+  const [session, setSession] = useState(undefined)
+  const [authEvent, setAuthEvent] = useState('')
+  const [role, setRole] = useState(null)
+  const [dataReady, setDataReady] = useState(false)
+  const [pmes, setPmes] = useState([])
+  const [achats, setAchats] = useState([])
+  const [cfg, setCfg] = useState({ alerte: 30, inactif: 90 })
+  const [notice, setNotice] = useState('')
   const [tab, setTab] = useState('dash')
   const [q, setQ] = useState('')
   const [fType, setFType] = useState('')
@@ -30,6 +58,42 @@ export default function App() {
   const [edit, setEdit] = useState(null)
   const [achatFor, setAchatFor] = useState(null)
   const [detail, setDetail] = useState(null)
+
+  useEffect(() => {
+    if (!supabase) return
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => { setAuthEvent(event); setSession(nextSession) })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!supabase || session === undefined) return
+    if (!session) {
+      setRole(null); setPmes([]); setAchats([]); setDataReady(true)
+      return
+    }
+    let cancelled = false
+    setDataReady(false); setRole(null); setNotice('')
+    const load = async () => {
+      const { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
+      if (staffError) throw staffError
+      if (!staff) { if (!cancelled) setDataReady(true); return }
+      const [pmeRows, achatRows, settingsResult] = await Promise.all([
+        fetchAll('pmes', 'id'),
+        fetchAll('achats', 'date', false),
+        supabase.from('settings').select('alerte, inactif').eq('id', true).single(),
+      ])
+      if (settingsResult.error) throw settingsResult.error
+      if (cancelled) return
+      setRole(staff.role); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setCfg(settingsResult.data); setDataReady(true)
+    }
+    load().catch(error => { if (!cancelled) { setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
+    return () => { cancelled = true }
+  }, [session])
+
+  const canEdit = role === 'admin' || role === 'agent'
+  const isAdmin = role === 'admin'
+  const reportError = (error) => setNotice(`Opération impossible : ${error.message}`)
 
   const rows = useMemo(() => pmes.map(p => {
     const mine = achats.filter(a => a.pmeId === p.id).sort((a, b) => b.date.localeCompare(a.date))
@@ -61,9 +125,43 @@ export default function App() {
     (!fIncomplete || r.isIncomplete))
 
   const count = (f) => rows.filter(f).length
-  const savePme = (p) => { setPmes(p.id ? pmes.map(x => x.id === p.id ? p : x) : [...pmes, { ...p, id: Date.now() }]); setEdit(null) }
-  const delPme = (id) => { if (confirm('Supprimer cette PME et ses achats ?')) { setPmes(pmes.filter(p => p.id !== id)); setAchats(achats.filter(a => a.pmeId !== id)); setDetail(null) } }
-  const saveAchat = (a) => { setAchats([...achats, { ...a, id: Date.now() }]); setAchatFor(null) }
+  const savePme = async (p) => {
+    const result = p.id
+      ? await supabase.from('pmes').update(pmePayload(p)).eq('id', p.id).select().single()
+      : await supabase.from('pmes').insert(pmePayload(p)).select().single()
+    if (result.error) { reportError(result.error); return }
+    const saved = toPme(result.data)
+    setPmes(current => p.id ? current.map(x => x.id === p.id ? saved : x) : [...current, saved]); setEdit(null); setNotice('')
+  }
+  const delPme = async (id) => {
+    if (!isAdmin || !confirm('Supprimer cette PME et ses achats ?')) return
+    const { error } = await supabase.from('pmes').delete().eq('id', id)
+    if (error) { reportError(error); return }
+    setPmes(current => current.filter(p => p.id !== id)); setAchats(current => current.filter(a => a.pmeId !== id)); setDetail(null)
+  }
+  const saveAchat = async (a) => {
+    const { data, error } = await supabase.from('achats').insert({ pme_id: a.pmeId, date: a.date, qte: Number(a.qte), detail: a.detail || [] }).select().single()
+    if (error) { reportError(error); return }
+    setAchats(current => [...current, toAchat(data)]); setAchatFor(null); setNotice('')
+  }
+  const delAchat = async (id) => {
+    if (!isAdmin) return
+    const { error } = await supabase.from('achats').delete().eq('id', id)
+    if (error) { reportError(error); return }
+    setAchats(current => current.filter(a => a.id !== id))
+  }
+  const saveSettings = async (next) => {
+    setCfg(next)
+    const { error } = await supabase.from('settings').update(next).eq('id', true)
+    if (error) reportError(error)
+  }
+
+  if (!supabase) return <Gate title="Configuration requise">Ajoute VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY aux variables d’environnement.</Gate>
+  if (session === undefined) return <Gate title="Connexion à REGEDEK PME">Chargement de la session…</Gate>
+  if (authEvent === 'PASSWORD_RECOVERY' && session) return <PasswordRecovery setNotice={setNotice} />
+  if (!session) return <SignIn notice={notice} setNotice={setNotice} />
+  if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
+  if (!role) return <Gate title="Accès non configuré">{notice || 'Ce compte n’a pas encore de profil. Demande à l’administrateur REGEDEK de configurer ton accès dans Supabase.'}</Gate>
 
   const exportCsv = () => {
     const h = ['Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
@@ -81,12 +179,14 @@ export default function App() {
   return (<>
     <header>
       <h1>REGEDEK · PME AUTORISÉES — REGEDEK & MINISTÈRE</h1>
+      <div className="user-session"><span>{session.user.email} · {role}</span><button className="btn sec" onClick={() => supabase.auth.signOut()}>Déconnexion</button></div>
       <nav>
         {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>{l}</button>)}
       </nav>
     </header>
     <main>
+      {notice && <p role="alert" className="notice">{notice}</p>}
       {tab === 'dash' && <>
         <div className="cards">
           <div className="card" onClick={() => go('')}><b>{rows.length}</b><span>Entreprises enregistrées</span></div>
@@ -98,7 +198,7 @@ export default function App() {
           <div className="card" onClick={() => setFIncomplete(true) || setTab('pme')}><b>{count(r => r.isIncomplete || r.sAut.label === 'À vérifier' || r.sAgr.label === 'À vérifier')}</b><span>Dossiers incomplets ou à vérifier</span></div>
         </div>
         <h2>À surveiller</h2>
-        <Table rows={rows.filter(r => r.sAut.label !== 'Valide' || r.sAgr.label !== 'Valide' || r.isIncomplete || r.sAct.label !== 'Active')} onOpen={setDetail} />
+        <Table rows={rows.filter(r => r.sAut.label !== 'Valide' || r.sAgr.label !== 'Valide' || r.isIncomplete || r.sAct.label !== 'Active')} onOpen={setDetail} canEdit={canEdit} isAdmin={isAdmin} />
       </>}
 
       {tab === 'pme' && <>
@@ -134,28 +234,28 @@ export default function App() {
             <option value="non">Non</option>
           </select>
           <label className="check"><input type="checkbox" checked={fIncomplete} onChange={e => setFIncomplete(e.target.checked)} /> Dossiers incomplets</label>
-          <button className="btn" onClick={() => setEdit({ ...VIDE })}>+ Nouvelle PME</button>
+          {canEdit && <button className="btn" onClick={() => setEdit({ ...VIDE })}>+ Nouvelle PME</button>}
           <button className="btn sec" onClick={exportCsv}>Exporter CSV</button>
         </div>
-        <Table rows={filtered} onOpen={setDetail} />
+        <Table rows={filtered} onOpen={setDetail} canEdit={canEdit} isAdmin={isAdmin} />
       </>}
 
       {tab === 'achats' && <>
-        <div className="bar"><button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '' })}>+ Enregistrer un achat</button></div>
+        <div className="bar">{canEdit && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '' })}>+ Enregistrer un achat</button>}</div>
         <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Quantité</th><th></th></tr></thead><tbody>
           {[...achats].sort((a, b) => b.date.localeCompare(a.date)).map(a => <tr key={a.id}>
             <td>{fmt(a.date)}</td><td>{pmes.find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{Number(a.qte).toLocaleString('fr')}</td>
-            <td><button className="btn sec" onClick={() => setAchats(achats.filter(x => x.id !== a.id))}>Suppr.</button></td></tr>)}
+            <td>{isAdmin && <button className="btn sec" onClick={() => delAchat(a.id)}>Suppr.</button>}</td></tr>)}
         </tbody></table></div>
       </>}
 
       {tab === 'cfg' && <div className="box" style={{ margin: 0 }}>
         <h2>Règles de statut</h2>
         <div className="grid">
-          <div><label>Alerte « À renouveler » (jours avant expiration)</label><input type="number" value={cfg.alerte} onChange={e => setCfg({ ...cfg, alerte: +e.target.value })} /></div>
-          <div><label>PME « Inactive » après (jours sans achat)</label><input type="number" value={cfg.inactif} onChange={e => setCfg({ ...cfg, inactif: +e.target.value })} /></div>
+          <div><label>Alerte « À renouveler » (jours avant expiration)</label><input type="number" value={cfg.alerte} disabled={!isAdmin} onChange={e => saveSettings({ ...cfg, alerte: +e.target.value })} /></div>
+          <div><label>PME « Inactive » après (jours sans achat)</label><input type="number" value={cfg.inactif} disabled={!isAdmin} onChange={e => saveSettings({ ...cfg, inactif: +e.target.value })} /></div>
         </div>
-        <div className="row"><button className="btn red" onClick={() => { if (confirm('Revenir aux données de départ ?')) { setPmes(PMES); setAchats(ACHATS) } }}>Réinitialiser les données</button></div>
+        {!isAdmin && <p>Seul un administrateur peut modifier ces règles.</p>}
       </div>}
     </main>
 
@@ -177,12 +277,59 @@ export default function App() {
         <h2 className="subhead">Achats ({r.totalSacs.toLocaleString('fr')} sacs)</h2>
         {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {Number(a.qte).toLocaleString('fr')} sacs</li>)}</ul> : <p>Aucun achat.</p>}
         <div className="row">
-          <button className="btn red" onClick={() => delPme(r.id)}>Supprimer</button>
-          <button className="btn sec" onClick={() => { setDetail(null); setAchatFor({ pmeId: r.id, date: new Date().toISOString().slice(0, 10), qte: '' }) }}>+ Achat</button>
-          <button className="btn" onClick={() => { setDetail(null); setEdit(pmes.find(p => p.id === r.id)) }}>Modifier</button>
+          {isAdmin && <button className="btn red" onClick={() => delPme(r.id)}>Supprimer</button>}
+          {canEdit && <button className="btn sec" onClick={() => { setDetail(null); setAchatFor({ pmeId: r.id, date: new Date().toISOString().slice(0, 10), qte: '' }) }}>+ Achat</button>}
+          {canEdit && <button className="btn" onClick={() => { setDetail(null); setEdit(pmes.find(p => p.id === r.id)) }}>Modifier</button>}
         </div>
       </div></div>) })()}
   </>)
+}
+
+function Gate({ title, children }) {
+  return <main className="gate"><section className="box"><h2>{title}</h2><p>{children}</p></section></main>
+}
+
+function SignIn({ notice, setNotice }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event) => {
+    event.preventDefault(); setBusy(true); setNotice('')
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    setBusy(false)
+    if (error) setNotice('Connexion refusée. Vérifie ton adresse et ton mot de passe, ou contacte le service informatique.')
+  }
+  const recover = async () => {
+    if (!email.trim()) { setNotice('Saisis ton adresse e-mail pour recevoir le lien de réinitialisation.'); return }
+    setBusy(true); setNotice('')
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
+    setBusy(false); setNotice(error ? 'Impossible d’envoyer le lien de réinitialisation.' : 'Si ce compte existe, un lien de réinitialisation vient d’être envoyé.')
+  }
+  return <main className="gate"><section className="box auth-box"><h2>Connexion à REGEDEK PME</h2>
+    <p>Accès réservé au personnel autorisé.</p>{notice && <p role="alert" className="notice">{notice}</p>}
+    <form onSubmit={submit} className="auth-form">
+      <div><label htmlFor="email">Adresse e-mail professionnelle</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div>
+      <div><label htmlFor="password">Mot de passe</label><input id="password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>
+      <button className="btn" disabled={busy}>{busy ? 'Connexion…' : 'Se connecter'}</button>
+    </form><button className="link-button" onClick={recover} disabled={busy}>Mot de passe oublié ?</button>
+    <p className="auth-help">Les comptes sont créés par un administrateur. L’inscription publique est désactivée.</p>
+  </section></main>
+}
+
+function PasswordRecovery({ setNotice }) {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event) => {
+    event.preventDefault(); setBusy(true)
+    const { error } = await supabase.auth.updateUser({ password })
+    setBusy(false)
+    if (error) { setNotice('Le mot de passe n’a pas pu être modifié. Demande un nouveau lien.'); return }
+    await supabase.auth.signOut()
+  }
+  return <main className="gate"><section className="box auth-box"><h2>Nouveau mot de passe</h2><form onSubmit={submit} className="auth-form">
+    <div><label htmlFor="new-password">Mot de passe (12 caractères minimum)</label><input id="new-password" type="password" minLength="12" autoComplete="new-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>
+    <button className="btn" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer le mot de passe'}</button>
+  </form></section></main>
 }
 
 function Table({ rows, onOpen }) {
@@ -239,3 +386,4 @@ function AchatForm({ a, pmes, onSave, onClose }) {
       <button className="btn" onClick={() => f.qte > 0 && f.date ? onSave(f) : alert('Date et quantité obligatoires')}>Enregistrer</button></div>
   </div></div>
 }
+
