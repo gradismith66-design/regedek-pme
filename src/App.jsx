@@ -141,6 +141,7 @@ export default function App() {
         : error.message)
     }
     else if (data.session) setAuthNotice('Compte créé. Vérification et attribution du rôle administrateur en cours…')
+    else if (data.user && (data.user.identities?.length ?? 0) === 0) setAuthNotice(`Le compte ${FIRST_ADMIN_EMAIL} existe déjà. Retourne à la connexion ou utilise « Mot de passe oublié ? »; après connexion, son rôle admin sera activé.`)
     else setAuthNotice(`Un lien de vérification a été envoyé à ${FIRST_ADMIN_EMAIL}. Ouvre-le pour terminer la création du compte admin.`)
     setAuthBusy(false)
   }
