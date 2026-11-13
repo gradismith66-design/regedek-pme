@@ -65,15 +65,29 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase) return
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    supabase.rpc('admin_bootstrap_available').then(({ data, error }) => {
-      if (!error) setBootstrapAvailable(Boolean(data))
-    })
+    let active = true
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
       setSession(nextSession)
     })
-    return () => subscription.unsubscribe()
+    Promise.all([supabase.auth.getSession(), supabase.rpc('admin_bootstrap_available')])
+      .then(([sessionResult, bootstrapResult]) => {
+        if (!active) return
+        if (sessionResult.error) setAuthNotice(`Impossible de charger la session : ${sessionResult.error.message}`)
+        setSession(sessionResult.data?.session ?? null)
+        if (bootstrapResult.error) {
+          setBootstrapAvailable(false)
+          setAuthNotice(`Initialisation admin indisponible : ${bootstrapResult.error.message}. Vérifie que les migrations REGEDEK PME sont appliquées sur le projet Supabase configuré.`)
+          return
+        }
+        setBootstrapAvailable(Boolean(bootstrapResult.data))
+      })
+      .catch(error => {
+        if (!active) return
+        setBootstrapAvailable(false)
+        setAuthNotice(`Impossible de joindre Supabase : ${error.message}`)
+      })
+    return () => { active = false; subscription.unsubscribe() }
   }, [])
 
   useEffect(() => {
