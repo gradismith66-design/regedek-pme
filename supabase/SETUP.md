@@ -9,33 +9,29 @@ Dans les variables d’environnement Vercel, ajoute ces variables en Production,
 
 Après leur ajout, redéploie l’application. Le fichier `.env.local` sert uniquement au développement local et n’est pas suivi par Git.
 
-## Consultation publique du registre
+## Acces a l'application
 
-La migration `20261113093524_allow_public_registry_read.sql` autorise la lecture sans connexion des PME, des achats et des règles de statut. La migration `20261113093555_sync_verified_sheet_data.sql` ajoute les dates d'agrément et d'autorisation vérifiées ainsi que l'achat manquant de NEW SEPRONAC. La migration `20261113093537_sync_pdf_registry_names.sql` corrige les trois noms des PME selon le PDF. Applique toutes les migrations au projet Supabase avant de déployer cette version.
+L'application demande une session Supabase et un profil dans `staff_profiles`. La migration `20261113093524_allow_public_registry_read.sql` avait active la lecture publique; la migration `20261113095326_restrict_app_access_bootstrap_admin.sql` la retire et remet la lecture sous les politiques du personnel. La migration `20261113093555_sync_verified_sheet_data.sql` synchronise les donnees verifiees et `20261113093537_sync_pdf_registry_names.sql` corrige les trois noms du PDF.
 
-Cela rend publiques les informations présentes dans ces tables, notamment les noms, coordonnées et adresses des PME ainsi que l’historique des achats. Les visiteurs non connectés ne reçoivent aucun droit d’écriture. Les droits de modification des comptes du personnel restent gérés par les politiques RLS existantes.
+Dans Supabase Auth, autorise les URL de retour de l'application, notamment le domaine de production et `http://localhost:5173`. Active la confirmation des adresses e-mail. Configure un SMTP institutionnel pour l'envoi des confirmations et des liens de reinitialisation.
 
-Dans Supabase Auth, ajoute le domaine de production Vercel à la liste des URL de redirection autorisées. Pour la mise en service, désactive les inscriptions publiques et crée/invite les comptes de la régie depuis le tableau de bord Supabase. L’application ne propose pas d’inscription publique.
-
-Configure un SMTP institutionnel pour l’envoi fiable des liens de récupération de mot de passe.
+Les visiteurs peuvent voir la page de connexion, mais les tables PME, achats et reglages ne sont plus lisibles par le role `anon`. Un compte authentifie sans profil personnel reste bloque hors du registre.
 
 ## Premier administrateur
 
-1. Crée ou invite le compte du premier administrateur dans **Authentication > Users**.
-2. Dans le SQL Editor, remplace l’adresse ci-dessous par celle du compte créé, puis exécute :
+1. Ouvre l'application et choisis **Initialiser le premier compte admin**. Cette option n'apparait que tant qu'aucun profil personnel n'existe.
+2. La page n'accepte que `gradismith66@gmail.com`, configure dans la migration `20261113095326_restrict_app_access_bootstrap_admin.sql`. Cree le compte avec un mot de passe, puis confirme l'adresse depuis le lien envoye par Supabase. Le role `admin` est attribue automatiquement apres confirmation.
+3. L'initialisation est atomique et ne peut etre utilisee qu'une seule fois. Les appels RPC verifies cote base refusent les autres adresses et les sessions non confirmees.
+4. Pour ajouter les autres agents/lecteurs, cree leurs comptes dans **Authentication > Users**, puis attribue un profil dans `staff_profiles` :
 
 ```sql
 insert into public.staff_profiles (user_id, role)
-select id, 'admin'
+select id, 'reader'
 from auth.users
-where lower(email) = lower('admin@regedek.cd')
+where lower(email) = lower('agent@regedek.cd')
 on conflict (user_id) do update set role = excluded.role;
 ```
 
-3. Ajoute les autres comptes depuis **Authentication > Users**, puis attribue un profil dans `staff_profiles` avec l’un des rôles suivants :
-
-- `admin` : consultation, modification et suppression ; gestion des règles de statut.
-- `agent` : consultation, création et modification ; pas de suppression ni de changement des règles.
+- `admin` : consultation, modification et suppression ; gestion des regles de statut.
+- `agent` : consultation, creation et modification ; pas de suppression ni de changement des regles.
 - `reader` : consultation seulement.
-
-Les données du registre sont publiquement lisibles, y compris par les comptes sans ligne dans `staff_profiles`. Les opérations d’écriture restent soumises aux rôles et politiques RLS ; masquer un bouton dans l’interface ne constitue pas le contrôle d’accès.

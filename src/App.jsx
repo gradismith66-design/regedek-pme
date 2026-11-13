@@ -5,6 +5,7 @@ import { statutExp, statutActivite } from './status.js'
 const Tag = ({ s }) => <span className={`tag ${s.cls}`}>{s.label}</span>
 const fmt = (d) => d ? d.split('-').reverse().join('/') : '—'
 const normalize = (v) => (v ?? '').toString().trim()
+const FIRST_ADMIN_EMAIL = 'gradismith66@gmail.com'
 const VIDE = { nom: '', type: 'MENAGE', numAut: '', dateAut: '', expAut: '', dateAgr: '', expAgr: '', contact: '', tel: '', email: '', adresse: '', communes: '', quartiers: '', statutJuridique: '', source: 'saisie manuelle', note: '' }
 
 const toPme = (p) => ({
@@ -40,6 +41,10 @@ export default function App() {
   const [session, setSession] = useState(undefined)
   const [role, setRole] = useState(null)
   const [dataReady, setDataReady] = useState(false)
+  const [bootstrapAvailable, setBootstrapAvailable] = useState(null)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authNotice, setAuthNotice] = useState('')
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
   const [pmes, setPmes] = useState([])
   const [achats, setAchats] = useState([])
   const [cfg, setCfg] = useState({ alerte: 30, inactif: 90 })
@@ -61,7 +66,13 @@ export default function App() {
   useEffect(() => {
     if (!supabase) return
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession))
+    supabase.rpc('admin_bootstrap_available').then(({ data, error }) => {
+      if (!error) setBootstrapAvailable(Boolean(data))
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
+      setSession(nextSession)
+    })
     return () => subscription.unsubscribe()
   }, [])
 
@@ -70,11 +81,32 @@ export default function App() {
     let cancelled = false
     setDataReady(false); setRole(null); setNotice('')
     const load = async () => {
-      let nextRole = null
-      if (session) {
-        const { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
-        if (staffError) throw staffError
-        nextRole = staff?.role ?? null
+      if (!session) {
+        setPmes([]); setAchats([]); setDataReady(true)
+        return
+      }
+
+      let { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
+      if (staffError) throw staffError
+      if (!staff && session.user.email?.toLowerCase() === FIRST_ADMIN_EMAIL) {
+        const { data: canBootstrap, error: bootstrapCheckError } = await supabase.rpc('admin_bootstrap_available')
+        if (bootstrapCheckError) throw bootstrapCheckError
+        setBootstrapAvailable(Boolean(canBootstrap))
+        if (canBootstrap) {
+          const { error: bootstrapError } = await supabase.rpc('bootstrap_first_admin')
+          if (bootstrapError) throw bootstrapError
+          const result = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).single()
+          staff = result.data
+          staffError = result.error
+          if (staffError) throw staffError
+          setBootstrapAvailable(false)
+        }
+      }
+      const nextRole = staff?.role ?? null
+      if (!nextRole) {
+        if (cancelled) return
+        setRole(null); setPmes([]); setAchats([]); setDataReady(true)
+        return
       }
       const [pmeRows, achatRows, settingsResult] = await Promise.all([
         fetchAll('pmes', 'id'),
@@ -85,9 +117,45 @@ export default function App() {
       if (cancelled) return
       setRole(nextRole); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setCfg(settingsResult.data); setDataReady(true)
     }
-    load().catch(error => { if (!cancelled) { setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
+    load().catch(error => { if (!cancelled) { setAuthNotice(error.message); setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
     return () => { cancelled = true }
   }, [session])
+
+  const signIn = async ({ email, password }) => {
+    setAuthBusy(true); setAuthNotice('')
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    if (error) setAuthNotice(error.message)
+    setAuthBusy(false)
+  }
+  const createFirstAdmin = async ({ password }) => {
+    setAuthBusy(true); setAuthNotice('')
+    const { data, error } = await supabase.auth.signUp({
+      email: FIRST_ADMIN_EMAIL,
+      password,
+      options: { emailRedirectTo: window.location.origin },
+    })
+    if (error) setAuthNotice(error.message)
+    else if (data.session) setAuthNotice('Compte créé. Vérification et attribution du rôle administrateur en cours…')
+    else setAuthNotice(`Un lien de vérification a été envoyé à ${FIRST_ADMIN_EMAIL}. Ouvre-le pour terminer la création du compte admin.`)
+    setAuthBusy(false)
+  }
+  const resetPassword = async ({ email }) => {
+    setAuthBusy(true); setAuthNotice('')
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
+    setAuthNotice(error ? error.message : 'Si un compte existe pour cette adresse, un lien de réinitialisation a été envoyé.')
+    setAuthBusy(false)
+  }
+  const saveNewPassword = async ({ password }) => {
+    setAuthBusy(true); setAuthNotice('')
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) setAuthNotice(error.message)
+    else setPasswordRecovery(false)
+    setAuthBusy(false)
+  }
+  const signOut = async () => {
+    setAuthNotice('')
+    await supabase.auth.signOut()
+  }
 
   const canEdit = role === 'admin' || role === 'agent'
   const isAdmin = role === 'admin'
@@ -156,7 +224,10 @@ export default function App() {
 
   if (!supabase) return <Gate title="Configuration requise">Ajoute VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY aux variables d’environnement.</Gate>
   if (session === undefined) return <Gate title="Connexion à REGEDEK PME">Chargement de la session…</Gate>
+  if (session && passwordRecovery) return <PasswordRecovery busy={authBusy} notice={authNotice} onSave={saveNewPassword} />
+  if (!session) return <AuthScreen bootstrapAvailable={bootstrapAvailable} busy={authBusy} notice={authNotice} onSignIn={signIn} onCreateFirstAdmin={createFirstAdmin} onResetPassword={resetPassword} />
   if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
+  if (!role) return <AccessDenied notice={authNotice} onSignOut={signOut} />
 
   const exportCsv = () => {
     const h = ['Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
@@ -178,6 +249,7 @@ export default function App() {
         {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>{l}</button>)}
       </nav>
+      <button className="btn sec sign-out" onClick={signOut}>Se déconnecter</button>
     </header>
     <main>
       {notice && <p role="alert" className="notice">{notice}</p>}
@@ -288,6 +360,77 @@ function Brand({ compact = false }) {
 
 function Gate({ title, children }) {
   return <main className="gate"><section className="box"><h2>{title}</h2><p>{children}</p></section></main>
+}
+
+function AuthScreen({ bootstrapAvailable, busy, notice, onSignIn, onCreateFirstAdmin, onResetPassword }) {
+  const [mode, setMode] = useState('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const setup = mode === 'setup'
+  const reset = mode === 'reset'
+  const submit = async (event) => {
+    event.preventDefault()
+    setConfirmation('')
+    if (setup && password.length < 8) { setConfirmation('Le mot de passe doit contenir au moins 8 caractères.'); return }
+    if (reset) return onResetPassword({ email })
+    if (setup) return onCreateFirstAdmin({ password })
+    return onSignIn({ email, password })
+  }
+  return <main className="auth-page">
+    <section className="auth-card">
+      <Brand />
+      <div className="auth-heading">
+        <span className="eyebrow">ESPACE DU PERSONNEL</span>
+        <h1>{setup ? 'Créer le premier compte admin' : reset ? 'Réinitialiser le mot de passe' : 'Connexion sécurisée'}</h1>
+        <p>{setup ? 'Cette initialisation est disponible une seule fois et réservée à l’adresse autorisée.' : 'Connecte-toi avec le compte du personnel REGEDEK.'}</p>
+      </div>
+      {notice && <p className="auth-notice" role="status">{notice}</p>}
+      {confirmation && <p className="auth-notice" role="alert">{confirmation}</p>}
+      <form className="auth-form" onSubmit={submit}>
+        {setup ? <div className="full"><label>Adresse autorisée</label><input type="email" value={FIRST_ADMIN_EMAIL} readOnly /></div> : <div className="full"><label htmlFor="auth-email">Adresse e-mail</label><input id="auth-email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></div>}
+        {!reset && <div className="full"><label htmlFor="auth-password">Mot de passe</label><input id="auth-password" type="password" autoComplete={setup ? 'new-password' : 'current-password'} minLength={setup ? 8 : undefined} value={password} onChange={e => setPassword(e.target.value)} required /></div>}
+        <button className="btn auth-submit" type="submit" disabled={busy || (bootstrapAvailable === null && setup)}>{busy ? 'Patiente…' : setup ? 'Créer le compte administrateur' : reset ? 'Envoyer le lien' : 'Se connecter'}</button>
+      </form>
+      <div className="auth-links">
+        {mode === 'login' && <button className="text-button" type="button" onClick={() => setMode('reset')}>Mot de passe oublié ?</button>}
+        {mode !== 'login' && <button className="text-button" type="button" onClick={() => setMode('login')}>Retour à la connexion</button>}
+        {bootstrapAvailable && mode === 'login' && <button className="text-button" type="button" onClick={() => setMode('setup')}>Initialiser le premier compte admin</button>}
+      </div>
+      <p className="auth-footnote">L’accès au registre est réservé aux comptes autorisés.</p>
+    </section>
+  </main>
+}
+
+function AccessDenied({ notice, onSignOut }) {
+  return <main className="gate"><section className="box access-denied">
+    <Brand />
+    <h2>Accès non autorisé</h2>
+    <p>Ce compte n’a pas de profil dans le personnel REGEDEK. Contacte un administrateur pour obtenir l’accès.</p>
+    {notice && <p className="auth-notice" role="alert">{notice}</p>}
+    <button className="btn" onClick={onSignOut}>Se déconnecter</button>
+  </section></main>
+}
+
+function PasswordRecovery({ busy, notice, onSave }) {
+  const [password, setPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const submit = (event) => {
+    event.preventDefault()
+    if (password.length < 8) { setConfirmation('Le mot de passe doit contenir au moins 8 caractères.'); return }
+    setConfirmation('')
+    onSave({ password })
+  }
+  return <main className="auth-page"><section className="auth-card">
+    <Brand />
+    <div className="auth-heading"><span className="eyebrow">SÉCURITÉ DU COMPTE</span><h1>Nouveau mot de passe</h1><p>Choisis un mot de passe d’au moins 8 caractères.</p></div>
+    {notice && <p className="auth-notice" role="alert">{notice}</p>}
+    {confirmation && <p className="auth-notice" role="alert">{confirmation}</p>}
+    <form className="auth-form" onSubmit={submit}>
+      <div className="full"><label htmlFor="new-password">Nouveau mot de passe</label><input id="new-password" type="password" autoComplete="new-password" minLength={8} value={password} onChange={e => setPassword(e.target.value)} required /></div>
+      <button className="btn auth-submit" type="submit" disabled={busy}>{busy ? 'Patiente…' : 'Enregistrer le mot de passe'}</button>
+    </form>
+  </section></main>
 }
 
 function Table({ rows, onOpen }) {
