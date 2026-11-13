@@ -11,7 +11,7 @@ Après leur ajout, redéploie l’application. Le fichier `.env.local` sert uniq
 
 ## Consultation publique du registre
 
-La migration `20261113090000_allow_public_registry_read.sql` autorise la lecture sans connexion des PME, des achats et des règles de statut. La migration `20261113100000_sync_verified_sheet_data.sql` ajoute les dates d'agrément et d'autorisation vérifiées ainsi que l'achat manquant de NEW SEPRONAC. Applique les deux migrations au projet Supabase avant de déployer cette version.
+La migration `20261113093524_allow_public_registry_read.sql` autorise la lecture sans connexion des PME, des achats et des règles de statut. La migration `20261113093555_sync_verified_sheet_data.sql` ajoute les dates d'agrément et d'autorisation vérifiées ainsi que l'achat manquant de NEW SEPRONAC. La migration `20261113093537_sync_pdf_registry_names.sql` corrige les trois noms des PME selon le PDF. Applique toutes les migrations au projet Supabase avant de déployer cette version.
 
 Cela rend publiques les informations présentes dans ces tables, notamment les noms, coordonnées et adresses des PME ainsi que l’historique des achats. Les visiteurs non connectés ne reçoivent aucun droit d’écriture. Les droits de modification des comptes du personnel restent gérés par les politiques RLS existantes.
 

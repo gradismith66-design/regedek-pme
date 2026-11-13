@@ -1549,7 +1549,7 @@ export const PMES = [
   "id": 77
  },
  {
-  "nom": "PERFORMANCE",
+  "nom": "PERFORMENCE SERVICE",
   "type": "MENAGE",
   "numAut": "REGEDEK/DSG/PS/2026",
   "dateAut": "2026-03-11",
@@ -2029,7 +2029,7 @@ export const PMES = [
   "id": 101
  },
  {
-  "nom": "SOCIETE GRACE OF THE IVINNER",
+  "nom": "SOCIETE GRACE OF THE WINNER",
   "type": "HORECA",
   "numAut": "REGEDEK/STEGRACEOFTHEIVINNER/0.../2026",
   "dateAut": "2026-10-15",
@@ -2049,7 +2049,7 @@ export const PMES = [
   "id": 102
  },
  {
-  "nom": "NZITA MBUTA ELYSE",
+  "nom": "DASCO (NZITA MBUTA ELYSE)",
   "type": "HORECA",
   "numAut": "REGEDEK/DSG/AJILIV/0.../2026",
   "dateAut": "2026-10-16",
