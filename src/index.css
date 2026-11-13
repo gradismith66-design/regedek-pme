@@ -175,55 +175,12 @@ main {
   width: min(100%, 460px);
 }
 
-.auth-form {
-  display: grid;
-  gap: 14px;
-  margin-top: 18px;
-}
-
-.auth-box > .brand-lockup {
-  margin-bottom: 22px;
-}
-
-.auth-form .btn {
-  width: 100%;
-}
-
-.link-button {
-  margin-top: 14px;
-  padding: 4px 0;
-  border: 0;
-  color: var(--blue-700);
-  background: transparent;
-  font-size: 13px;
-  text-decoration: underline;
-}
-
-.auth-help {
-  margin: 16px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .notice {
   padding: 10px 12px;
   border: 1px solid #e7b2b2;
   border-radius: 7px;
   color: #781f25;
   background: #fff1f1;
-}
-
-.user-session {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #d5e2f0;
-  font-size: 13px;
-}
-
-.user-session .btn {
-  min-height: 34px;
-  padding: 7px 10px;
 }
 
 @media (max-width: 600px) {
@@ -733,4 +690,3 @@ h2 {
     white-space: normal;
   }
 }
-

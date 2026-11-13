@@ -38,7 +38,6 @@ const fetchAll = async (table, orderColumn, ascending = true) => {
 
 export default function App() {
   const [session, setSession] = useState(undefined)
-  const [authEvent, setAuthEvent] = useState('')
   const [role, setRole] = useState(null)
   const [dataReady, setDataReady] = useState(false)
   const [pmes, setPmes] = useState([])
@@ -62,14 +61,14 @@ export default function App() {
   useEffect(() => {
     if (!supabase) return
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => { setAuthEvent(event); setSession(nextSession) })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession))
     return () => subscription.unsubscribe()
   }, [])
 
   useEffect(() => {
     if (!supabase || session === undefined) return
     if (!session) {
-      setRole(null); setPmes([]); setAchats([]); setDataReady(true)
+      setRole(null); setPmes([]); setAchats([]); setNotice('Aucune session active. Le registre reste protégé et nécessite une authentification.'); setDataReady(true)
       return
     }
     let cancelled = false
@@ -77,7 +76,13 @@ export default function App() {
     const load = async () => {
       const { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
       if (staffError) throw staffError
-      if (!staff) { if (!cancelled) setDataReady(true); return }
+      if (!staff) {
+        if (!cancelled) {
+          setNotice('Ce compte n’a pas de profil configuré. Le registre reste protégé ; contacte un administrateur.')
+          setDataReady(true)
+        }
+        return
+      }
       const [pmeRows, achatRows, settingsResult] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
@@ -158,10 +163,7 @@ export default function App() {
 
   if (!supabase) return <Gate title="Configuration requise">Ajoute VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY aux variables d’environnement.</Gate>
   if (session === undefined) return <Gate title="Connexion à REGEDEK PME">Chargement de la session…</Gate>
-  if (authEvent === 'PASSWORD_RECOVERY' && session) return <PasswordRecovery setNotice={setNotice} />
-  if (!session) return <SignIn notice={notice} setNotice={setNotice} />
   if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
-  if (!role) return <Gate title="Accès non configuré">{notice || 'Ce compte n’a pas encore de profil. Demande à l’administrateur REGEDEK de configurer ton accès dans Supabase.'}</Gate>
 
   const exportCsv = () => {
     const h = ['Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
@@ -179,7 +181,6 @@ export default function App() {
   return (<>
     <header>
       <Brand compact />
-      <div className="user-session"><span>{session.user.email} · {role}</span><button className="btn sec" onClick={() => supabase.auth.signOut()}>Déconnexion</button></div>
       <nav>
         {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>{l}</button>)}
@@ -296,49 +297,6 @@ function Gate({ title, children }) {
   return <main className="gate"><section className="box"><h2>{title}</h2><p>{children}</p></section></main>
 }
 
-function SignIn({ notice, setNotice }) {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const submit = async (event) => {
-    event.preventDefault(); setBusy(true); setNotice('')
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
-    setBusy(false)
-    if (error) setNotice('Connexion refusée. Vérifie ton adresse et ton mot de passe, ou contacte le service informatique.')
-  }
-  const recover = async () => {
-    if (!email.trim()) { setNotice('Saisis ton adresse e-mail pour recevoir le lien de réinitialisation.'); return }
-    setBusy(true); setNotice('')
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
-    setBusy(false); setNotice(error ? 'Impossible d’envoyer le lien de réinitialisation.' : 'Si ce compte existe, un lien de réinitialisation vient d’être envoyé.')
-  }
-  return <main className="gate"><section className="box auth-box"><Brand /><h2>Connexion à votre espace</h2>
-    <p>Accès réservé au personnel autorisé.</p>{notice && <p role="alert" className="notice">{notice}</p>}
-    <form onSubmit={submit} className="auth-form">
-      <div><label htmlFor="email">Adresse e-mail professionnelle</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div>
-      <div><label htmlFor="password">Mot de passe</label><input id="password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>
-      <button className="btn" disabled={busy}>{busy ? 'Connexion…' : 'Se connecter'}</button>
-    </form><button className="link-button" onClick={recover} disabled={busy}>Mot de passe oublié ?</button>
-    <p className="auth-help">Les comptes sont créés par un administrateur. L’inscription publique est désactivée.</p>
-  </section></main>
-}
-
-function PasswordRecovery({ setNotice }) {
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const submit = async (event) => {
-    event.preventDefault(); setBusy(true)
-    const { error } = await supabase.auth.updateUser({ password })
-    setBusy(false)
-    if (error) { setNotice('Le mot de passe n’a pas pu être modifié. Demande un nouveau lien.'); return }
-    await supabase.auth.signOut()
-  }
-  return <main className="gate"><section className="box auth-box"><Brand /><h2>Nouveau mot de passe</h2><form onSubmit={submit} className="auth-form">
-    <div><label htmlFor="new-password">Mot de passe (12 caractères minimum)</label><input id="new-password" type="password" minLength="12" autoComplete="new-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>
-    <button className="btn" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer le mot de passe'}</button>
-  </form></section></main>
-}
-
 function Table({ rows, onOpen }) {
   return <div className="tw"><table className="pme-table"><thead><tr>
     <th>Entreprise</th><th>Catégorie</th><th>N° autorisation REGEDEK</th><th>Statut REGEDEK</th><th>Expiration REGEDEK</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
@@ -393,4 +351,3 @@ function AchatForm({ a, pmes, onSave, onClose }) {
       <button className="btn" onClick={() => f.qte > 0 && f.date ? onSave(f) : alert('Date et quantité obligatoires')}>Enregistrer</button></div>
   </div></div>
 }
-
