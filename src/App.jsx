@@ -134,7 +134,12 @@ export default function App() {
       password,
       options: { emailRedirectTo: window.location.origin },
     })
-    if (error) setAuthNotice(error.message)
+    if (error) {
+      const message = error.message.toLowerCase()
+      setAuthNotice(message.includes('already registered') || message.includes('already exists')
+        ? `Le compte ${FIRST_ADMIN_EMAIL} existe déjà. Retourne à la connexion; après connexion, son rôle admin sera activé.`
+        : error.message)
+    }
     else if (data.session) setAuthNotice('Compte créé. Vérification et attribution du rôle administrateur en cours…')
     else setAuthNotice(`Un lien de vérification a été envoyé à ${FIRST_ADMIN_EMAIL}. Ouvre-le pour terminer la création du compte admin.`)
     setAuthBusy(false)
