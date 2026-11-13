@@ -9,6 +9,12 @@ Dans les variables d’environnement Vercel, ajoute ces variables en Production,
 
 Après leur ajout, redéploie l’application. Le fichier `.env.local` sert uniquement au développement local et n’est pas suivi par Git.
 
+## Consultation publique du registre
+
+La migration `20261113090000_allow_public_registry_read.sql` autorise la lecture sans connexion des PME, des achats et des règles de statut. La migration `20261113100000_sync_verified_sheet_data.sql` ajoute les dates d'agrément et d'autorisation vérifiées ainsi que l'achat manquant de NEW SEPRONAC. Applique les deux migrations au projet Supabase avant de déployer cette version.
+
+Cela rend publiques les informations présentes dans ces tables, notamment les noms, coordonnées et adresses des PME ainsi que l’historique des achats. Les visiteurs non connectés ne reçoivent aucun droit d’écriture. Les droits de modification des comptes du personnel restent gérés par les politiques RLS existantes.
+
 Dans Supabase Auth, ajoute le domaine de production Vercel à la liste des URL de redirection autorisées. Pour la mise en service, désactive les inscriptions publiques et crée/invite les comptes de la régie depuis le tableau de bord Supabase. L’application ne propose pas d’inscription publique.
 
 Configure un SMTP institutionnel pour l’envoi fiable des liens de récupération de mot de passe.
@@ -32,5 +38,4 @@ on conflict (user_id) do update set role = excluded.role;
 - `agent` : consultation, création et modification ; pas de suppression ni de changement des règles.
 - `reader` : consultation seulement.
 
-Les comptes sans ligne dans `staff_profiles` ne peuvent pas lire les données. La base applique les mêmes droits via RLS ; masquer un bouton dans l’interface ne constitue pas le contrôle d’accès.
-
+Les données du registre sont publiquement lisibles, y compris par les comptes sans ligne dans `staff_profiles`. Les opérations d’écriture restent soumises aux rôles et politiques RLS ; masquer un bouton dans l’interface ne constitue pas le contrôle d’accès.

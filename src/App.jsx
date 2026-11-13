@@ -67,21 +67,14 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase || session === undefined) return
-    if (!session) {
-      setRole(null); setPmes([]); setAchats([]); setNotice('Aucune session active. Le registre reste protégé et nécessite une authentification.'); setDataReady(true)
-      return
-    }
     let cancelled = false
     setDataReady(false); setRole(null); setNotice('')
     const load = async () => {
-      const { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
-      if (staffError) throw staffError
-      if (!staff) {
-        if (!cancelled) {
-          setNotice('Ce compte n’a pas de profil configuré. Le registre reste protégé ; contacte un administrateur.')
-          setDataReady(true)
-        }
-        return
+      let nextRole = null
+      if (session) {
+        const { data: staff, error: staffError } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
+        if (staffError) throw staffError
+        nextRole = staff?.role ?? null
       }
       const [pmeRows, achatRows, settingsResult] = await Promise.all([
         fetchAll('pmes', 'id'),
@@ -90,7 +83,7 @@ export default function App() {
       ])
       if (settingsResult.error) throw settingsResult.error
       if (cancelled) return
-      setRole(staff.role); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setCfg(settingsResult.data); setDataReady(true)
+      setRole(nextRole); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setCfg(settingsResult.data); setDataReady(true)
     }
     load().catch(error => { if (!cancelled) { setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
     return () => { cancelled = true }

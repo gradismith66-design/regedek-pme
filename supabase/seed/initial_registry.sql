@@ -14,7 +14,7 @@ insert into public.pmes (id, nom, type, num_aut, date_aut, exp_aut, date_agr, ex
 ('10', 'AKINET', 'HORECA', 'REGEDEK/DSG/AKN/2026', '2026-02-25', '2027-02-25', NULL, NULL, '', '', '822101386', '', 'Appart A11 37 Av Mpolo Maurice C/ Gombe | Appart A11 37 Av Mpolo Maurice C/ TG5ombe', '', '', '', 'registre', '2'),
 ('11', 'AJILIV', 'HORECA', 'REGEDEK/DSG/AJILIV/0.../2026', '2026-10-16', '2027-10-16', NULL, NULL, '', '', '891601871', '', '4b, av: Mbuji Mayi; C/Gombe; Q/Golf', '', '', '', 'registre', '2'),
 ('12', 'RAFIKI GROUP', 'MENAGE', 'REGEDEK/RFK/005/2025', '2025-07-07', '2026-07-07', NULL, NULL, 'BALIKI BASSELO HENRI DIRECTEUR GENERAL', '', '+243999224251', '', '03, Av 3 VallÃ©e, Q. Jolie Parc C/Ngaliema', 'Gombe, Kintambo, Ngaliema', 'CLINIQUE, JOLI PARC, ITIMBIRI', 'Entreprise individuelle', 'registre + enquÃªte', '1'),
-('13', 'NEW SEPRONAC', 'MENAGE', '', '2025-07-07', '2026-07-07', NULL, NULL, 'MPUATI KIALONGO, Manager GÃ©nÃ©ral', '', '822045841 / 243999923743', '', '', 'Gombe, Lemba, Limete', 'Gombe, Kingabwa, Lemba foire', 'Autre', 'registre + enquÃªte', '1'),
+('13', 'NEW SEPRONAC', 'MENAGE', '', '2025-07-07', '2026-07-07', '2025-05-26', '2026-05-26', 'MPUATI KIALONGO, Manager GÃ©nÃ©ral', '', '822045841 / 243999923743', '', '', 'Gombe, Lemba, Limete', 'Gombe, Kingabwa, Lemba foire', 'Autre', 'registre + enquÃªte', '1'),
 ('14', 'ENEROFD', 'MENAGE', 'REGEDEK/DSG/EPO/001/2025', '2025-07-07', '2026-07-07', '2025-04-14', '2026-04-14', 'Marie lucie lea Mandungu makomu presidente', '', '815991424', '', '172, RÃ©f: ArrÃªt Chambre Froide; C/Selembao', 'Gombe, Lingwala, Ngaliema', 'Equateur /jolie parc/la voix du peuple', 'Association', 'registre + enquÃªte', '1'),
 ('15', 'LA JOIE', 'HORECA', 'REGEDEK/LJO/003/2025', '2025-07-08', '2026-07-08', '2026-02-25', '2027-02-25', '', '', '991835462', '', '21, av: Yongo; C/Selembao Q/Madiata', '', '', '', 'registre', '1'),
 ('16', 'LOGOS 1Ã¨re', 'MENAGE', 'REGEDEK/LOG/025/2025', '2025-07-10', '2026-07-10', NULL, NULL, '', '', '814634999', '', '40, av: Boma; C/Kintambo; Q/Lisala', '', '', '', 'registre', '1'),
@@ -91,12 +91,12 @@ insert into public.pmes (id, nom, type, num_aut, date_aut, exp_aut, date_agr, ex
 ('87', 'KING POUBELLE', '', '', NULL, NULL, NULL, NULL, '', '', '', '', '', '', '', '', 'achats seulement', '0'),
 ('88', 'PACL', '', '', NULL, NULL, NULL, NULL, 'IMPULI MALUNGU Lino', '', '+243818315318', '', '', 'Lemba', 'Mandrandele, Commercial, Masano', 'Autre', 'registre + enquÃªte', '1'),
 ('89', 'HOPE', 'MENAGE', 'REGEDEK/DSG/HOPE/074/2026', '2026-06-03', '2027-06-03', '2026-05-14', '2027-05-14', '', '', '', '', 'av: la grace; C/Gombe; Q/Haut-Command.', '', '', '', 'registre', '1'),
-('90', 'SOCIETE GMK ASSAINISSEMENT', '', 'REGEDEK/GMK/2026', '2025-01-01', '2026-01-01', NULL, NULL, '', '', '856428900', '', '3754, av: Kimiala; C/Limete; Q/Salongo', '', '', '', 'registre', '1'),
+('90', 'SOCIETE GMK ASSAINISSEMENT', '', 'REGEDEK/DSG/EBM/071/2026', '2026-03-30', '2027-03-30', NULL, NULL, '', '', '856428900', '', '3754, av: Kimiala; C/Limete; Q/Salongo', '', '', '', 'registre', '1'),
 ('91', 'AMODD', 'MENAGE', 'REGEDEK/AMODD/059/2026', '2026-06-04', '2027-06-04', NULL, NULL, '', '', '+243814006547', '', '231 , av: Lumiere; C/Matete', '', '', '', 'registre', '1'),
 ('92', 'JRNEE MONDIALE DE L''ENVIRONNEMENT', '', '', NULL, NULL, NULL, NULL, '', '', '', '', '', '', '', '', 'achats seulement', '0'),
 ('93', 'ANGEL COSMETIQUE', '', '', NULL, NULL, NULL, NULL, '', '', '', '', '', '', '', '', 'achats seulement', '0'),
 ('94', 'FRAPPE DUNGA', 'MENAGE', 'REGEDEK/DUNGA/075/2026', '2026-07-20', '2027-07-20', '2026-07-21', '2027-07-21', '', '', '894133537', '', '23, av: 10 eme rue; C/Limete; Q/Industriel', '', '', '', 'registre', '1'),
-('95', 'RECOLAND SAS', 'HORECA', 'REGEDEK/RECOLAND/076/2026', '2026-07-20', '2027-07-20', NULL, NULL, 'Gracia MENGA', '', '818228600 / 0830777130', '', '169, av: Lowa; C/Kinshasa; Q/Ngwaka', 'Gombe, Kinshasa', 'Haut commandement, Ngbaka', 'Entreprise individuelle', 'registre + enquÃªte', '1'),
+('95', 'RECOLAND SAS', 'HORECA', 'REGEDEK/RECOLAND/076/2026', '2026-07-20', '2027-07-20', '2026-07-15', NULL, 'Gracia MENGA', '', '818228600 / 0830777130', '', '169, av: Lowa; C/Kinshasa; Q/Ngwaka', 'Gombe, Kinshasa', 'Haut commandement, Ngbaka', 'Entreprise individuelle', 'registre + enquÃªte', '1'),
 ('96', 'FONDATION SAPHIR', '', 'REGEDEK/DSG/SAPHIR/078/2026', '2026-07-20', '2027-07-20', '2026-06-15', '2027-06-15', '', '', '', '', '37, Av Mpolo Maurice, Q. Golf C/Gombe', '', '', '', 'registre', '1'),
 ('97', 'MAGA', 'MENAGE', 'REGEDEK/DSG/MAGA/077/2026', '2026-07-23', '2027-07-23', '2026-07-20', '2027-07-20', 'Responsable', '', '970024861', '', '02, av: Yalingimbi; C/Ngaliema; Q/Bumba', 'Ngaliema', 'Basoko', 'Entreprise individuelle', 'registre + enquÃªte', '1'),
 ('98', 'T.H. ASSISTANCE', '', '', NULL, NULL, '2026-07-20', '2027-07-20', '', '', '', '', '', '', '', '', 'registre', '1'),
@@ -277,9 +277,9 @@ insert into public.achats (id, pme_id, date, qte, detail) values
 (160, 80, '2026-10-12', 3600, '[1200,1200,1200]'::jsonb),
 (161, 11, '2026-10-12', 200, '[200,0,0]'::jsonb),
 (162, 94, '2026-10-13', 460, '[230,230,0]'::jsonb),
-(163, 94, '2026-10-22', 920, '[460,460,0]'::jsonb)
+(163, 94, '2026-10-22', 920, '[460,460,0]'::jsonb),
+(164, 13, '2026-10-29', 600, '[200,200,200]'::jsonb)
 on conflict (id) do nothing;
 
 select setval(pg_get_serial_sequence('public.pmes', 'id'), coalesce((select max(id) from public.pmes), 1), true);
 select setval(pg_get_serial_sequence('public.achats', 'id'), coalesce((select max(id) from public.achats), 1), true);
-
