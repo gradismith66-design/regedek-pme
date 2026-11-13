@@ -70,11 +70,17 @@ export default function App() {
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
       setSession(nextSession)
     })
-    supabase.auth.getSession()
-      .then(sessionResult => {
+    Promise.all([supabase.auth.getSession(), supabase.rpc('admin_bootstrap_available')])
+      .then(([sessionResult, bootstrapResult]) => {
         if (!active) return
         if (sessionResult.error) setAuthNotice(`Impossible de charger la session : ${sessionResult.error.message}`)
         setSession(sessionResult.data?.session ?? null)
+        if (bootstrapResult.error) {
+          setBootstrapAvailable(false)
+          setAuthNotice(`Initialisation admin indisponible : ${bootstrapResult.error.message}. Vérifie que les migrations REGEDEK PME sont appliquées sur le projet Supabase configuré.`)
+        } else {
+          setBootstrapAvailable(Boolean(bootstrapResult.data))
+        }
       })
       .catch(error => {
         if (!active) return
@@ -90,26 +96,34 @@ export default function App() {
     let cancelled = false
     setDataReady(false); setRole(null); setNotice('')
     const load = async () => {
+      if (!session) {
+        setPmes([]); setAchats([]); setDataReady(true)
+        return
+      }
+
       let staff = null
-      if (session) {
-        const { data, error } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
-        if (error) throw error
-        staff = data
-        if (!staff && session.user.email?.toLowerCase() === FIRST_ADMIN_EMAIL) {
-          const { data: canBootstrap, error: bootstrapCheckError } = await supabase.rpc('admin_bootstrap_available')
-          if (bootstrapCheckError) throw bootstrapCheckError
-          setBootstrapAvailable(Boolean(canBootstrap))
-          if (canBootstrap) {
-            const { error: bootstrapError } = await supabase.rpc('bootstrap_first_admin')
-            if (bootstrapError) throw bootstrapError
-            const result = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).single()
-            staff = result.data
-            if (result.error) throw result.error
-            setBootstrapAvailable(false)
-          }
+      const { data, error } = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).maybeSingle()
+      if (error) throw error
+      staff = data
+      if (!staff && session.user.email?.toLowerCase() === FIRST_ADMIN_EMAIL) {
+        const { data: canBootstrap, error: bootstrapCheckError } = await supabase.rpc('admin_bootstrap_available')
+        if (bootstrapCheckError) throw bootstrapCheckError
+        setBootstrapAvailable(Boolean(canBootstrap))
+        if (canBootstrap) {
+          const { error: bootstrapError } = await supabase.rpc('bootstrap_first_admin')
+          if (bootstrapError) throw bootstrapError
+          const result = await supabase.from('staff_profiles').select('role').eq('user_id', session.user.id).single()
+          staff = result.data
+          if (result.error) throw result.error
+          setBootstrapAvailable(false)
         }
       }
-      const nextRole = staff?.role ?? 'reader'
+      const nextRole = staff?.role ?? null
+      if (!nextRole) {
+        if (cancelled) return
+        setRole(null); setPmes([]); setAchats([]); setDataReady(true)
+        return
+      }
       const [pmeRows, achatRows, settingsResult] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
@@ -119,7 +133,7 @@ export default function App() {
       if (cancelled) return
       setRole(nextRole); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setCfg(settingsResult.data); setDataReady(true)
     }
-    load().catch(error => { if (!cancelled) { setAuthNotice(error.message); setRole(session ? null : 'reader'); setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
+    load().catch(error => { if (!cancelled) { setAuthNotice(error.message); setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
     return () => { cancelled = true }
   }, [session])
 
@@ -231,10 +245,11 @@ export default function App() {
   }
 
   if (!supabase) return <Gate title="Configuration requise">Ajoute VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY aux variables d’environnement.</Gate>
-  if (session === undefined) return <Gate title="Chargement du registre">Connexion à Supabase…</Gate>
+  if (session === undefined) return <Gate title="Connexion à REGEDEK PME">Chargement de la session…</Gate>
   if (session && passwordRecovery) return <PasswordRecovery busy={authBusy} notice={authNotice} onSave={saveNewPassword} />
-  if (!dataReady) return <Gate title="Chargement du registre">Récupération des données…</Gate>
-  if (!role) return <Gate title="Chargement du registre">Impossible de vérifier le profil.</Gate>
+  if (!session) return <AuthScreen bootstrapAvailable={bootstrapAvailable} busy={authBusy} notice={authNotice} onSignIn={signIn} onCreateFirstAdmin={createFirstAdmin} onResetPassword={resetPassword} />
+  if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
+  if (!role) return <AccessDenied notice={authNotice} onSignOut={signOut} />
 
   const exportCsv = () => {
     const h = ['Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
