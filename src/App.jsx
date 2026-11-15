@@ -183,7 +183,7 @@ export default function App() {
   const isAdmin = role === 'admin'
   const reportError = (error) => setNotice(`Opération impossible : ${error.message}`)
 
-  const rows = useMemo(() => pmes.map(p => {
+  const rows = useMemo(() => [...pmes].sort((a, b) => a.id - b.id).map((p, index) => {
     const mine = achats.filter(a => a.pmeId === p.id).sort((a, b) => b.date.localeCompare(a.date))
     const dernier = mine[0]?.date || ''
     const totalSacs = mine.reduce((s, a) => s + Number(a.qte || 0), 0)
@@ -195,14 +195,14 @@ export default function App() {
     const isIncomplete = !p.nom || !p.type || !p.numAut || !p.dateAut || !p.expAut || !p.adresse || !p.tel
     const communes = normalize(p.communes).split(/[;,]/).map(v => v.trim()).filter(Boolean)
 
-    return { ...p, mine, dernier, totalSacs, sAut, sAgr, sAct, transaction, year, isIncomplete, communes }
+    return { ...p, numero: index + 1, mine, dernier, totalSacs, sAut, sAgr, sAct, transaction, year, isIncomplete, communes }
   }), [pmes, achats, cfg])
 
   const communeOptions = useMemo(() => Array.from(new Set(rows.flatMap(r => r.communes))).sort(), [rows])
   const yearOptions = useMemo(() => Array.from(new Set(rows.map(r => r.year).filter(Boolean))).sort((a, b) => b.localeCompare(a)), [rows])
 
   const filtered = rows.filter(r =>
-    (!q || [r.nom, r.contact, r.numAut, r.adresse, r.tel].join(' ').toLowerCase().includes(q.toLowerCase())) &&
+    (!q || [r.numero, String(r.numero).padStart(3, '0'), r.nom, r.contact, r.numAut, r.adresse, r.tel].join(' ').toLowerCase().includes(q.trim().toLowerCase())) &&
     (!fType || r.type === fType) &&
     (!fCommune || r.communes.some(c => c.toLowerCase().includes(fCommune.toLowerCase()))) &&
     (!fStatAut || r.sAut.label === fStatAut) &&
@@ -213,6 +213,10 @@ export default function App() {
     (!fIncomplete || r.isIncomplete))
 
   const count = (f) => rows.filter(f).length
+  const statutsDates = ['Valide', 'Expiré', 'À renouveler', 'Non renseigné', 'À vérifier']
+  const totalStatutsAut = statutsDates.reduce((total, statut) => total + count(r => r.sAut.label === statut), 0)
+  const horsRegistre = count(r => !normalize(r.source).toLowerCase().includes('registre'))
+  const registreSansEcheance = count(r => normalize(r.source).toLowerCase().includes('registre') && !r.expAut)
   const savePme = async (p) => {
     const result = p.id
       ? await supabase.from('pmes').update(pmePayload(p)).eq('id', p.id).select().single()
@@ -252,16 +256,22 @@ export default function App() {
   if (!role) return <AccessDenied notice={authNotice} onSignOut={signOut} />
 
   const exportCsv = () => {
-    const h = ['Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
-    const l = filtered.map(r => [r.nom, r.type, r.numAut, r.dateAut, r.expAut, r.sAut.label, r.dateAgr, r.expAgr, r.sAgr.label, r.tel, r.adresse, r.communes.join('; '), r.dernier, r.totalSacs, r.sAct.label])
+    const h = ['N° PME','Entreprise','Catégorie','Numéro autorisation','Date autorisation','Expiration autorisation','Statut REGEDEK','Date agrément','Expiration agrément','Statut ministériel','Téléphone','Adresse','Communes','Dernier achat','Total sacs','Activité']
+    const l = filtered.map(r => [r.numero, r.nom, r.type, r.numAut, r.dateAut, r.expAut, r.sAut.label, r.dateAgr, r.expAgr, r.sAgr.label, r.tel, r.adresse, r.communes.join('; '), r.dernier, r.totalSacs, r.sAct.label])
     const csv = [h, ...l].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\n')
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' })); a.download = 'pme_autorisees_regedek.csv'; a.click()
   }
 
   const go = (stat, field = 'fStatAut') => {
-    if (field === 'fStatAut') setFStatAut(stat)
-    if (field === 'fStatMin') setFStatMin(stat)
+    setFStatAut(field === 'fStatAut' ? stat : '')
+    setFStatMin(field === 'fStatMin' ? stat : '')
+    setQ(''); setFType(''); setFCommune(''); setFYear(''); setFTransaction(''); setFRenewal(''); setFIncomplete(false)
     setTab('pme')
+  }
+
+  const showIncomplete = () => {
+    go('')
+    setFIncomplete(true)
   }
 
   return (<>
@@ -276,14 +286,27 @@ export default function App() {
     <main>
       {notice && <p role="alert" className="notice">{notice}</p>}
       {tab === 'dash' && <>
+        <h2>Statut des autorisations REGEDEK</h2>
         <div className="cards">
-          <div className="card" onClick={() => go('')}><b>{rows.length}</b><span>Entreprises enregistrées</span></div>
-          <div className="card" onClick={() => go('Valide')}><b>{count(r => r.sAut.label === 'Valide')}</b><span>Autorisations REGEDEK en cours</span></div>
-          <div className="card" onClick={() => go('Expiré')}><b>{count(r => r.sAut.label === 'Expiré')}</b><span>Autorisations REGEDEK expirées</span></div>
+          <div className="card" onClick={() => go('')}><b>{rows.length}</b><span>Dossiers PME suivis</span></div>
+          <div className="card" onClick={() => go('Valide')}><b>{count(r => r.sAut.label === 'Valide')}</b><span>Autorisations en cours</span></div>
+          <div className="card" onClick={() => go('Expiré')}><b>{count(r => r.sAut.label === 'Expiré')}</b><span>Autorisations expirées</span></div>
           <div className="card" onClick={() => go('À renouveler')}><b>{count(r => r.sAut.label === 'À renouveler')}</b><span>Autorisations à renouveler</span></div>
-          <div className="card" onClick={() => go('Valide', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Valide')}</b><span>Agréments ministériels valides</span></div>
-          <div className="card" onClick={() => go('Expiré', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Expiré')}</b><span>Agréments ministériels expirés</span></div>
-          <div className="card" onClick={() => setFIncomplete(true) || setTab('pme')}><b>{count(r => r.isIncomplete || r.sAut.label === 'À vérifier' || r.sAgr.label === 'À vérifier')}</b><span>Dossiers incomplets ou à vérifier</span></div>
+          <div className="card" onClick={() => go('Non renseigné')}><b>{count(r => r.sAut.label === 'Non renseigné')}</b><span>Dates d'expiration non renseignées</span></div>
+          <div className="card" onClick={() => go('À vérifier')}><b>{count(r => r.sAut.label === 'À vérifier')}</b><span>Dates REGEDEK à vérifier</span></div>
+        </div>
+        <p className="metric-note">Répartition REGEDEK : {totalStatutsAut} / {rows.length} dossiers. Parmi les dossiers sans échéance, {horsRegistre} proviennent uniquement d'achats ou d'enquêtes et {registreSansEcheance} sont de source registre sans date d'expiration.</p>
+        <h2>Agréments ministériels</h2>
+        <div className="cards">
+          <div className="card" onClick={() => go('Valide', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Valide')}</b><span>Agréments valides</span></div>
+          <div className="card" onClick={() => go('Expiré', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Expiré')}</b><span>Agréments expirés</span></div>
+          <div className="card" onClick={() => go('À renouveler', 'fStatMin')}><b>{count(r => r.sAgr.label === 'À renouveler')}</b><span>Agréments à renouveler</span></div>
+          <div className="card" onClick={() => go('Non renseigné', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Non renseigné')}</b><span>Dates d'agrément non renseignées</span></div>
+          <div className="card" onClick={() => go('À vérifier', 'fStatMin')}><b>{count(r => r.sAgr.label === 'À vérifier')}</b><span>Dates d'agrément à vérifier</span></div>
+        </div>
+        <h2>Qualité des dossiers</h2>
+        <div className="cards">
+          <div className="card" onClick={showIncomplete}><b>{count(r => r.isIncomplete || r.sAut.label === 'À vérifier' || r.sAgr.label === 'À vérifier')}</b><span>Dossiers incomplets ou dates à vérifier</span></div>
         </div>
         <h2>À surveiller</h2>
         <Table rows={rows.filter(r => r.sAut.label !== 'Valide' || r.sAgr.label !== 'Valide' || r.isIncomplete || r.sAct.label !== 'Active')} onOpen={setDetail} canEdit={canEdit} isAdmin={isAdmin} />
@@ -291,7 +314,7 @@ export default function App() {
 
       {tab === 'pme' && <>
         <div className="bar filters">
-          <input placeholder="Recherche par entreprise, numéro ou téléphone" value={q} onChange={e => setQ(e.target.value)} />
+          <input placeholder="Recherche par N° PME, entreprise, autorisation ou téléphone" value={q} onChange={e => setQ(e.target.value)} />
           <select value={fType} onChange={e => setFType(e.target.value)}>
             <option value="">Catégorie</option>
             {[...new Set(rows.map(r => r.type).filter(Boolean))].sort().map(v => <option key={v} value={v}>{v}</option>)}
@@ -332,7 +355,7 @@ export default function App() {
         <div className="bar">{canEdit && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '' })}>+ Enregistrer un achat</button>}</div>
         <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Quantité</th><th></th></tr></thead><tbody>
           {[...achats].sort((a, b) => b.date.localeCompare(a.date)).map(a => <tr key={a.id}>
-            <td>{fmt(a.date)}</td><td>{pmes.find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{Number(a.qte).toLocaleString('fr')}</td>
+            <td>{fmt(a.date)}</td><td>{rows.find(p => p.id === a.pmeId)?.numero ?? '—'} — {pmes.find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{Number(a.qte).toLocaleString('fr')}</td>
             <td>{isAdmin && <button className="btn sec" onClick={() => delAchat(a.id)}>Suppr.</button>}</td></tr>)}
         </tbody></table></div>
       </>}
@@ -351,7 +374,7 @@ export default function App() {
     {achatFor && <AchatForm a={achatFor} pmes={pmes} onSave={saveAchat} onClose={() => setAchatFor(null)} />}
     {detail && (() => { const r = rows.find(x => x.id === detail.id); if (!r) return null; return (
       <div className="modal" onClick={() => setDetail(null)}><div className="box detail" onClick={e => e.stopPropagation()}>
-        <h2>{r.nom} <small>({r.type || '—'})</small></h2>
+        <h2>PME n° {r.numero} — {r.nom} <small>({r.type || '—'})</small></h2>
         <p><strong>Contact :</strong> {r.contact || '—'} · <strong>Tél :</strong> {r.tel || '—'} · <strong>E-mail :</strong> {r.email || '—'}<br />
           <strong>Adresse :</strong> {r.adresse || '—'}<br />
           <strong>Communes :</strong> {r.communes.join(', ') || '—'}<br />
@@ -457,9 +480,10 @@ function PasswordRecovery({ busy, notice, onSave }) {
 
 function Table({ rows, onOpen }) {
   return <div className="tw"><table className="pme-table"><thead><tr>
-    <th>Entreprise</th><th>Catégorie</th><th>N° autorisation REGEDEK</th><th>Statut REGEDEK</th><th>Expiration REGEDEK</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
+    <th>N° PME</th><th>Entreprise</th><th>Catégorie</th><th>N° autorisation REGEDEK</th><th>Statut REGEDEK</th><th>Expiration REGEDEK</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
   </tr></thead><tbody>
     {rows.map(r => <tr key={r.id} className="cl" onClick={() => onOpen(r)}>
+      <td data-label="N° PME"><b>{r.numero}</b></td>
       <td data-label="Entreprise"><b>{r.nom}</b></td>
       <td data-label="Catégorie">{r.type || '—'}</td>
       <td data-label="N° autorisation REGEDEK">{r.numAut || '—'}</td>
@@ -470,7 +494,7 @@ function Table({ rows, onOpen }) {
       <td data-label="Téléphone">{r.tel || '—'}</td>
       <td data-label="Actions"><button className="btn sec" onClick={(e) => { e.stopPropagation(); onOpen(r) }}>Voir</button></td>
     </tr>)}
-    {!rows.length && <tr><td colSpan="9">Aucun résultat.</td></tr>}
+    {!rows.length && <tr><td colSpan="10">Aucun résultat.</td></tr>}
   </tbody></table></div>
 }
 
@@ -501,7 +525,7 @@ function AchatForm({ a, pmes, onSave, onClose }) {
   return <div className="modal"><div className="box">
     <h2>Enregistrer un achat de sacs</h2>
     <div className="grid">
-      <div className="full"><label>PME</label><select value={f.pmeId} onChange={e => setF({ ...f, pmeId: +e.target.value })}>{pmes.map(p => <option key={p.id} value={p.id}>{p.nom}</option>)}</select></div>
+      <div className="full"><label>PME</label><select value={f.pmeId} onChange={e => setF({ ...f, pmeId: +e.target.value })}>{[...pmes].sort((a, b) => a.id - b.id).map((p, index) => <option key={p.id} value={p.id}>{index + 1} — {p.nom}</option>)}</select></div>
       <div><label>Date d'achat</label><input type="date" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} /></div>
       <div><label>Quantité de sacs</label><input type="number" value={f.qte} onChange={e => setF({ ...f, qte: e.target.value })} /></div>
     </div>

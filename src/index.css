@@ -253,6 +253,13 @@ main {
   margin-bottom: 28px;
 }
 
+.metric-note {
+  margin: -12px 0 28px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .card {
   min-height: 106px;
   padding: 18px;
@@ -386,28 +393,30 @@ table {
 }
 
 .pme-table {
-  min-width: 1180px;
+  min-width: 1240px;
   table-layout: fixed;
 }
 
 .pme-table th:nth-child(1),
-.pme-table td:nth-child(1) { width: 16%; }
+.pme-table td:nth-child(1) { width: 6%; }
 .pme-table th:nth-child(2),
-.pme-table td:nth-child(2) { width: 9%; }
+.pme-table td:nth-child(2) { width: 16%; }
 .pme-table th:nth-child(3),
-.pme-table td:nth-child(3) { width: 18%; }
+.pme-table td:nth-child(3) { width: 8%; }
 .pme-table th:nth-child(4),
-.pme-table td:nth-child(4) { width: 10%; }
+.pme-table td:nth-child(4) { width: 18%; }
 .pme-table th:nth-child(5),
 .pme-table td:nth-child(5) { width: 10%; }
 .pme-table th:nth-child(6),
-.pme-table td:nth-child(6) { width: 11%; }
+.pme-table td:nth-child(6) { width: 10%; }
 .pme-table th:nth-child(7),
 .pme-table td:nth-child(7) { width: 11%; }
 .pme-table th:nth-child(8),
-.pme-table td:nth-child(8) { width: 9%; }
+.pme-table td:nth-child(8) { width: 11%; }
 .pme-table th:nth-child(9),
 .pme-table td:nth-child(9) { width: 6%; }
+.pme-table th:nth-child(10),
+.pme-table td:nth-child(10) { width: 4%; }
 
 th,
 td {
