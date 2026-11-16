@@ -5,6 +5,7 @@ import { statutExp, statutActivite } from './status.js'
 const Tag = ({ s }) => <span className={`tag ${s.cls}`}>{s.label}</span>
 const fmt = (d) => d ? d.split('-').reverse().join('/') : '—'
 const normalize = (v) => (v ?? '').toString().trim()
+const supabaseProjectHost = import.meta.env.VITE_SUPABASE_URL?.match(/^https?:\/\/([^/]+)/)?.[1] || 'inconnu'
 const FIRST_ADMIN_EMAIL = 'gradismith66@gmail.com'
 const DOSSIER_STATUSES = ['DOSSIER_NON_SOUMIS', 'DOSSIER_RECU', 'DOSSIER_INCOMPLET', 'DOCUMENTS_MANQUANTS', 'EN_COURS_DE_VERIFICATION', 'DOSSIER_COMPLET', 'VALIDE_ADMINISTRATIVEMENT', 'REJETE_ADMINISTRATIVEMENT']
 const AUTH_STATUSES = ['EXPIRE', 'EN_ETUDE_ADMINISTRATIVE', 'EN_ATTENTE_INSPECTION', 'EN_ATTENTE_SIGNATURE', 'AUTORISE', 'NON_CONFORME']
@@ -388,7 +389,7 @@ export default function App() {
   if (session && passwordRecovery) return <PasswordRecovery busy={authBusy} notice={authNotice} onSave={saveNewPassword} />
   if (!session) return <AuthScreen bootstrapAvailable={bootstrapAvailable} busy={authBusy} notice={authNotice} onSignIn={signIn} onCreateFirstAdmin={createFirstAdmin} onResetPassword={resetPassword} />
   if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
-  if (accessError) return <Gate title="Impossible de charger le registre">Le compte est connecté, mais la vérification de son accès ou le chargement des données a échoué : {accessError}. Vérifie que les migrations sont appliquées sur le projet Supabase utilisé par cette application.</Gate>
+  if (accessError) return <Gate title="Impossible de charger le registre">Le compte est connecté, mais la vérification de son accès ou le chargement des données a échoué : {accessError}. Projet Supabase utilisé : {supabaseProjectHost}. Vérifie que les migrations et le cache de schéma sont à jour dans ce projet.</Gate>
   if (!role) return <AccessDenied notice={authNotice} onSignOut={signOut} />
 
   const exportCsv = () => {
