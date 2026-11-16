@@ -67,6 +67,7 @@ export default function App() {
   const [session, setSession] = useState(undefined)
   const [role, setRole] = useState(null)
   const [dataReady, setDataReady] = useState(false)
+  const [accessError, setAccessError] = useState('')
   const [bootstrapAvailable, setBootstrapAvailable] = useState(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [authNotice, setAuthNotice] = useState('')
@@ -140,7 +141,7 @@ export default function App() {
   useEffect(() => {
     if (!supabase || session === undefined) return
     let cancelled = false
-    setDataReady(false); setRole(null); setNotice('')
+    setDataReady(false); setRole(null); setAccessError(''); setNotice('')
     const load = async () => {
       if (!session) {
         setPmes([]); setAchats([]); setDataReady(true)
@@ -183,7 +184,7 @@ export default function App() {
       if (cancelled) return
       setRole(nextRole); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
     }
-    load().catch(error => { if (!cancelled) { setAuthNotice(error.message); setNotice(`Impossible de charger le registre : ${error.message}`); setDataReady(true) } })
+    load().catch(error => { if (!cancelled) { setAccessError(error.message); setDataReady(true) } })
     return () => { cancelled = true }
   }, [session])
 
@@ -387,6 +388,7 @@ export default function App() {
   if (session && passwordRecovery) return <PasswordRecovery busy={authBusy} notice={authNotice} onSave={saveNewPassword} />
   if (!session) return <AuthScreen bootstrapAvailable={bootstrapAvailable} busy={authBusy} notice={authNotice} onSignIn={signIn} onCreateFirstAdmin={createFirstAdmin} onResetPassword={resetPassword} />
   if (!dataReady) return <Gate title="Chargement du registre">Vérification de ton accès et récupération des données…</Gate>
+  if (accessError) return <Gate title="Impossible de charger le registre">Le compte est connecté, mais la vérification de son accès ou le chargement des données a échoué : {accessError}. Vérifie que les migrations sont appliquées sur le projet Supabase utilisé par cette application.</Gate>
   if (!role) return <AccessDenied notice={authNotice} onSignOut={signOut} />
 
   const exportCsv = () => {
