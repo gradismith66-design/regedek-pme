@@ -78,6 +78,88 @@ const fetchAll = async (table, orderColumn, ascending = true) => {
   return all
 }
 
+const dateKeyInKinshasa = value => {
+  if (!value) return ''
+  const date = String(value)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Africa/Kinshasa', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(date))
+  const part = type => parts.find(item => item.type === type)?.value || ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+const makeDashboardBuckets = (period, now = new Date()) => {
+  const today = dateKeyInKinshasa(now.toISOString())
+  const [year, month, day] = today.split('-').map(Number)
+  const size = period === 'day' ? 14 : period === 'month' ? 12 : 5
+  return Array.from({ length: size }, (_, index) => {
+    const offset = index - size + 1
+    const date = period === 'day'
+      ? new Date(Date.UTC(year, month - 1, day + offset))
+      : period === 'month'
+        ? new Date(Date.UTC(year, month - 1 + offset, 1))
+        : new Date(Date.UTC(year + offset, 0, 1))
+    const key = period === 'day'
+      ? date.toISOString().slice(0, 10)
+      : period === 'month'
+        ? date.toISOString().slice(0, 7)
+        : date.toISOString().slice(0, 4)
+    const label = period === 'day'
+      ? new Intl.DateTimeFormat('fr-FR', { timeZone: 'UTC', day: '2-digit', month: '2-digit' }).format(date)
+      : period === 'month'
+        ? new Intl.DateTimeFormat('fr-FR', { timeZone: 'UTC', month: 'short' }).format(date).replace('.', '')
+        : key
+    return { key, label }
+  })
+}
+
+const bucketKeyFor = (value, period) => {
+  const date = dateKeyInKinshasa(value)
+  return period === 'day' ? date : period === 'month' ? date.slice(0, 7) : date.slice(0, 4)
+}
+
+const aggregateBuckets = (items, buckets, period, getDate, getValue = () => 1) => {
+  const values = new Map(buckets.map(bucket => [bucket.key, 0]))
+  for (const item of items) {
+    const key = bucketKeyFor(getDate(item), period)
+    if (values.has(key)) values.set(key, values.get(key) + Number(getValue(item) || 0))
+  }
+  return buckets.map(bucket => ({ ...bucket, value: values.get(bucket.key) }))
+}
+
+function HorizontalBarChart({ title, data, format = value => value.toLocaleString('fr-FR'), note }) {
+  const max = Math.max(1, ...data.map(item => item.value))
+  return <section className="dashboard-chart" aria-label={title}>
+    <h3>{title}</h3>
+    {note && <p className="chart-note">{note}</p>}
+    {data.length ? <div className="horizontal-bars" role="list">
+      {data.map(item => <div className="horizontal-bar-row" role="listitem" key={item.label}>
+        <span className="horizontal-bar-label">{item.label}</span>
+        <span className="horizontal-bar-track"><span className="horizontal-bar-fill" style={{ width: `${item.value ? Math.max(2, item.value / max * 100) : 0}%` }} /></span>
+        <strong className="horizontal-bar-value">{format(item.value)}</strong>
+      </div>)}
+    </div> : <p className="chart-empty">Aucune donnée disponible pour cette période.</p>}
+  </section>
+}
+
+function TrendBarChart({ title, data, format = value => value.toLocaleString('fr-FR'), note }) {
+  const max = Math.max(1, ...data.map(item => item.value))
+  return <section className="dashboard-chart" aria-label={title}>
+    <h3>{title}</h3>
+    {note && <p className="chart-note">{note}</p>}
+    {data.length ? <div className="trend-scroll">
+      <div className="trend-bars" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(24px, 1fr))` }}>
+        {data.map(item => <div className="trend-bar-column" key={item.key} title={`${item.label} : ${format(item.value)}`}>
+          <strong>{format(item.value)}</strong>
+          <div className="trend-bar-area"><span style={{ height: `${item.value ? Math.max(3, item.value / max * 100) : 0}%` }} /></div>
+          <small>{item.label}</small>
+        </div>)}
+      </div>
+    </div> : <p className="chart-empty">Aucune donnée disponible pour cette période.</p>}
+  </section>
+}
+
 export default function App() {
   const [session, setSession] = useState(undefined)
   const [role, setRole] = useState(null)
@@ -100,6 +182,9 @@ export default function App() {
   const [cfg, setCfg] = useState({ alerte: 30, inactif: 90 })
   const [notice, setNotice] = useState('')
   const [tab, setTab] = useState('dash')
+  const [dashboardPeriod, setDashboardPeriod] = useState('month')
+  const [dashboardActivities, setDashboardActivities] = useState([])
+  const [dashboardActivityBusy, setDashboardActivityBusy] = useState(false)
   const [q, setQ] = useState('')
   const [fType, setFType] = useState('')
   const [fCommune, setFCommune] = useState('')
@@ -315,6 +400,7 @@ export default function App() {
         if (!active) return
         const activity = payload.new
         setRecentActivities(current => [activity, ...current.filter(item => item.id !== activity.id)].slice(0, 5))
+        setDashboardActivities(current => [activity, ...current.filter(item => item.id !== activity.id)])
         if (activity.actor_id !== session?.user?.id) {
           if (tab !== 'activity') setUnreadActivityCount(current => current + 1)
           setActivityNotification(`${activity.actor_name} a effectué l’opération « ${ACTIVITY_LABELS[activity.operation] || activity.operation} ».`)
@@ -330,6 +416,45 @@ export default function App() {
       supabase.removeChannel(channel)
     }
   }, [canReadActivities, session?.user?.id, tab])
+
+  useEffect(() => {
+    if (tab !== 'dash' || !session?.user?.id || !role) return
+    let active = true
+    const refreshPmes = async () => {
+      try {
+        const allPmes = (await fetchAll('pmes', 'id')).map(toPme)
+        if (active) {
+          setPmes(allPmes.filter(pme => !pme.archivedAt))
+          setArchivedPmes(allPmes.filter(pme => pme.archivedAt))
+        }
+      } catch (error) {
+        if (active) reportError(error)
+      }
+    }
+    const refreshPurchases = async () => {
+      try {
+        const purchases = (await fetchAll('achats', 'date', false)).map(toAchat)
+        if (active) setAchats(purchases)
+      } catch (error) {
+        if (active) reportError(error)
+      }
+    }
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        refreshPmes()
+        refreshPurchases()
+      }
+    }
+    const interval = window.setInterval(refresh, 60_000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [tab, session?.user?.id, role])
 
   useEffect(() => {
     if (tab !== 'activity' || !canReadActivities) return
@@ -401,6 +526,74 @@ export default function App() {
 
     return { ...p, numero: index + 1, mine, dernier, totalSacs, sAut, sAgr, sAct, transaction, year, isIncomplete, communes }
   }), [pmes, achats, cfg])
+
+  const dashboardBuckets = useMemo(() => makeDashboardBuckets(dashboardPeriod), [dashboardPeriod])
+  const dashboardPmes = [...pmes, ...archivedPmes]
+  const dashboardPmeTrend = aggregateBuckets(dashboardPmes, dashboardBuckets, dashboardPeriod, pme => pme.createdAt)
+  const dashboardPurchaseTrend = aggregateBuckets(achats, dashboardBuckets, dashboardPeriod, purchase => purchase.date)
+  const dashboardAmountTrends = ['CDF', 'USD'].map(currency => ({
+    currency,
+    data: aggregateBuckets(
+      achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null),
+      dashboardBuckets,
+      dashboardPeriod,
+      purchase => purchase.date,
+      purchase => Number(purchase.montantTotal),
+    ),
+  })).filter(series => achats.some(purchase => purchase.devise === series.currency && purchase.montantTotal != null))
+  const dashboardActivityTrend = aggregateBuckets(dashboardActivities, dashboardBuckets, dashboardPeriod, activity => activity.created_at)
+  const dashboardActivityByStaff = Object.entries(dashboardActivities.reduce((totals, activity) => {
+    const key = bucketKeyFor(activity.created_at, dashboardPeriod)
+    if (dashboardBuckets.some(bucket => bucket.key === key)) {
+      const name = activity.actor_name || 'Nom non renseigné'
+      totals[name] = (totals[name] || 0) + 1
+    }
+    return totals
+  }, {})).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8)
+  const dashboardPurchaseTotals = ['CDF', 'USD'].map(currency => ({
+    currency,
+    amount: achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null)
+      .reduce((sum, purchase) => sum + Number(purchase.montantTotal), 0),
+  })).filter(total => achats.some(purchase => purchase.devise === total.currency && purchase.montantTotal != null))
+  const dashboardAuthorizationBars = [
+    { label: 'PME actives', value: pmes.length },
+    { label: 'Autorisations en cours', value: rows.filter(row => authTag(row.authorizationStatus, row.authorizationExpiryDate).label === 'Autorisé').length },
+    { label: 'En attente de décision', value: rows.filter(row => ['EN_ETUDE_ADMINISTRATIVE', 'EN_ATTENTE_INSPECTION', 'EN_ATTENTE_SIGNATURE'].includes(row.authorizationStatus)).length },
+    ...(archivedPmes.length ? [{ label: 'PME archivées', value: archivedPmes.length }] : []),
+  ]
+
+  useEffect(() => {
+    if (tab !== 'dash' || !canReadActivities || !dashboardBuckets.length) return
+    let active = true
+    setDashboardActivityBusy(true)
+    const loadDashboardActivities = async () => {
+      try {
+        let offset = 0
+        const all = []
+        while (true) {
+          const { data, error } = await supabase.from('staff_activity_log')
+            .select('id, created_at, actor_name')
+            .gte('created_at', new Date(new Date(`${dashboardBuckets[0].key}T00:00:00.000Z`).getTime() - 60 * 60 * 1000).toISOString())
+            .order('created_at', { ascending: true })
+            .range(offset, offset + 499)
+          if (error) throw error
+          all.push(...data)
+          if (data.length < 500) break
+          offset += data.length
+        }
+        if (active) setDashboardActivities(all)
+      } catch (error) {
+        if (active) {
+          setNotice(`Impossible de charger les activités du tableau de bord : ${error.message}`)
+          setDashboardActivities([])
+        }
+      } finally {
+        if (active) setDashboardActivityBusy(false)
+      }
+    }
+    loadDashboardActivities()
+    return () => { active = false }
+  }, [tab, canReadActivities, dashboardBuckets[0]?.key])
 
   const communeOptions = useMemo(() => Array.from(new Set(rows.flatMap(r => r.communes))).sort(), [rows])
   const yearOptions = useMemo(() => Array.from(new Set(rows.map(r => r.year).filter(Boolean))).sort((a, b) => b.localeCompare(a)), [rows])
@@ -623,16 +816,18 @@ export default function App() {
   const goAuthorization = status => { setFAuthorizationStatus(status); setFDossierStatus(''); setFStatAut(''); setFStatMin(''); setQ(''); setFType(''); setFCommune(''); setFYear(''); setFTransaction(''); setFRenewal(''); setFIncomplete(false); setTab('pme') }
 
   return (<>
-    <header>
+    <header className="app-header">
       <Brand compact />
-      <nav>
+      {session && <button className="btn sec sign-out" onClick={signOut}>Se déconnecter</button>}
+    </header>
+    <div className="app-navigation">
+      <nav aria-label="Navigation principale">
         {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(canArchivePme ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ...(canManageStaff ? [['users', 'Utilisateurs']] : []), ...(canReadActivities ? [['activity', 'Activités']] : []), ...(canReadReports ? [['reports', 'Rapports']] : []), ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k === 'activity') setUnreadActivityCount(0); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>
             {l}{k === 'activity' && unreadActivityCount > 0 && <span className="activity-count">{unreadActivityCount}</span>}
           </button>)}
       </nav>
-      {session && <button className="btn sec sign-out" onClick={signOut}>Se déconnecter</button>}
-    </header>
+    </div>
     <main>
       {notice && <p role="alert" className="notice">{notice}</p>}
       {activityNotification && <p className="activity-notification" role="status">{activityNotification}<button className="btn sec" onClick={() => setActivityNotification('')}>Fermer</button></p>}
@@ -678,6 +873,44 @@ export default function App() {
         <div className="cards">
           <div className="card" onClick={showIncomplete}><b>{count(r => r.isIncomplete || r.sAut.label === 'À vérifier' || r.sAgr.label === 'À vérifier')}</b><span>Dossiers incomplets ou dates à vérifier</span></div>
         </div>
+        <section className="dashboard-visualizations">
+          <div className="dashboard-section-heading">
+            <div>
+              <h2>Graphiques du tableau de bord</h2>
+              <p>Données réelles Supabase; les PME et achats s’actualisent automatiquement chaque minute et au retour sur la page.</p>
+            </div>
+            <label className="period-filter">Regrouper par
+              <select value={dashboardPeriod} onChange={event => setDashboardPeriod(event.target.value)}>
+                <option value="day">Jour — 14 derniers jours</option>
+                <option value="month">Mois — 12 derniers mois</option>
+                <option value="year">Année — 5 dernières années</option>
+              </select>
+            </label>
+          </div>
+          <div className="dashboard-kpis">
+            <div><span>PME enregistrées visibles</span><strong>{dashboardPmes.length.toLocaleString('fr-FR')}</strong></div>
+            <div><span>Autorisations en cours</span><strong>{dashboardAuthorizationBars[1].value.toLocaleString('fr-FR')}</strong></div>
+            <div><span>En attente de décision</span><strong>{dashboardAuthorizationBars[2].value.toLocaleString('fr-FR')}</strong></div>
+            <div><span>Achats enregistrés</span><strong>{achats.length.toLocaleString('fr-FR')}</strong></div>
+            {dashboardPurchaseTotals.map(total => <div key={total.currency}><span>Montant saisi — {total.currency}</span><strong>{total.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {total.currency}</strong></div>)}
+          </div>
+          <h3 className="dashboard-subtitle">Évolution des enregistrements</h3>
+          <div className="dashboard-charts">
+            <TrendBarChart title="PME enregistrées" data={dashboardPmeTrend} />
+            <TrendBarChart title="Achats enregistrés" data={dashboardPurchaseTrend} />
+          </div>
+          <h3 className="dashboard-subtitle">Situation et activité</h3>
+          <div className="dashboard-charts">
+            <HorizontalBarChart title="PME et autorisations" data={dashboardAuthorizationBars} note="Les PME archivées, si elles sont visibles pour ton rôle, sont indiquées séparément." />
+            {dashboardAmountTrends.length
+              ? dashboardAmountTrends.map(series => <TrendBarChart key={series.currency} title={`Montant des achats — ${series.currency}`} data={series.data} format={value => value.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} note={`Montants renseignés en ${series.currency}; les devises ne sont pas additionnées.`} />)
+              : <section className="dashboard-chart"><h3>Montant des achats</h3><p className="chart-empty">Aucun montant d’achat n’a encore été saisi. Les quantités seules ne permettent pas d’estimer un montant.</p></section>}
+            {canReadActivities && <>
+              <HorizontalBarChart title="Activités par administrateur" data={dashboardActivityByStaff} note={dashboardActivityBusy ? 'Actualisation des activités…' : `Activités sur la période (${dashboardActivities.length.toLocaleString('fr-FR')} événements chargés).`} />
+              <TrendBarChart title="Évolution des activités" data={dashboardActivityTrend} />
+            </>}
+          </div>
+        </section>
         <h2>À surveiller</h2>
         <Table
           rows={rows.filter(r => r.authorizationStatus !== 'AUTORISE' || r.dossierStatus !== 'VALIDE_ADMINISTRATIVEMENT' || documentStats(r.id).missing > 0 || r.sAut.label !== 'Valide' || r.sAgr.label !== 'Valide' || r.isIncomplete || r.sAct.label !== 'Active')}
