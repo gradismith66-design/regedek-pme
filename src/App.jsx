@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from './supabase.js'
 import { statutExp, statutActivite } from './status.js'
 
@@ -13,6 +13,11 @@ const DOSSIER_LABELS = { DOSSIER_NON_SOUMIS: 'Dossier non soumis', DOSSIER_RECU:
 const AUTH_LABELS = { EXPIRE: 'Expiré', EN_ETUDE_ADMINISTRATIVE: 'En étude administrative', EN_ATTENTE_INSPECTION: "En attente d'inspection", EN_ATTENTE_SIGNATURE: 'En attente de signature', AUTORISE: 'Autorisé', NON_CONFORME: 'Non conforme' }
 const DOSSIER_COLORS = { DOSSIER_NON_SOUMIS: 'gris', DOSSIER_RECU: 'bleu', DOSSIER_INCOMPLET: 'orange', DOCUMENTS_MANQUANTS: 'rouge-clair', EN_COURS_DE_VERIFICATION: 'violet', DOSSIER_COMPLET: 'bleu-fonce', VALIDE_ADMINISTRATIVEMENT: 'vert', REJETE_ADMINISTRATIVEMENT: 'rouge' }
 const AUTH_COLORS = { EXPIRE: 'rouge', EN_ETUDE_ADMINISTRATIVE: 'bleu', EN_ATTENTE_INSPECTION: 'orange', EN_ATTENTE_SIGNATURE: 'violet', AUTORISE: 'vert', NON_CONFORME: 'rouge' }
+const MORATORIUM_WARNING_DAYS = 15
+const MORATORIUM_STATUS_LABELS = { active: 'Moratoire en cours', soon: 'Expire prochainement', expired: 'Moratoire expiré', upcoming: 'À venir', none: 'Aucun moratoire attribué' }
+const MORATORIUM_STATUS_COLORS = { active: 'vert', soon: 'orange', expired: 'rouge', upcoming: 'bleu', none: 'gris' }
+const PURCHASE_STATUS_LABELS = { EN_ATTENTE: 'En attente de validation', VALIDE: 'Validé', ANNULE: 'Annulé' }
+const PURCHASE_STATUS_COLORS = { EN_ATTENTE: 'orange', VALIDE: 'vert', ANNULE: 'gris' }
 const ACTIVITY_LABELS = {
   'pme.created': 'PME ajoutée', 'pme.updated': 'PME modifiée', 'pme.archived': 'PME archivée',
   'pme.restored': 'PME restaurée', 'pme.dossier.updated': 'Dossier administratif modifié',
@@ -22,6 +27,7 @@ const ACTIVITY_LABELS = {
   'document.deleted': 'Pièce justificative supprimée', 'inspection.created': 'Inspection enregistrée',
   'staff.invited': 'Compte invité', 'staff.role.updated': 'Rôle utilisateur modifié',
   'staff.permission.updated': 'Permission personnalisée modifiée', 'settings.updated': 'Paramètres modifiés',
+  'moratorium.created': 'Moratoire accordé', 'purchase.status.updated': 'Statut d’achat modifié',
 }
 const dossierTag = status => ({ label: DOSSIER_LABELS[status] || 'Dossier non soumis', cls: DOSSIER_COLORS[status] || 'gris' })
 const todayKinshasa = () => {
@@ -57,7 +63,31 @@ const toAchat = (a) => ({
   id: a.id, pmeId: a.pme_id, date: a.date, qte: a.qte, detail: a.detail || [],
   designation: a.designation || '', unite: a.unite || 'sacs',
   prixUnitaire: a.prix_unitaire, devise: a.devise || '', montantTotal: a.montant_total,
+  status: a.status || 'VALIDE',
 })
+const toMoratorium = row => ({
+  id: row.id, pmeId: row.pme_id, startsOn: row.starts_on, expiresOn: row.expires_on,
+  durationDays: row.duration_days, reason: row.reason, observations: row.observations || '',
+  attachmentPath: row.attachment_path || '', attachmentName: row.attachment_name || '',
+  grantedByName: row.granted_by_name || 'Non renseigné', grantedByEmail: row.granted_by_email || '',
+  createdAt: row.created_at,
+})
+const sortMoratoriaLatestFirst = rows => [...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
+const isTrashBagPurchase = purchase => {
+  const designation = normalize(purchase.designation).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[-_]+/g, ' ')
+  const unit = normalize(purchase.unite).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[-_]+/g, ' ')
+  return /\bsacs?\s*(?:(?:a|pour)\s*)?poubelles?\b/.test(designation)
+    && /^sacs?(?:\s+poubelles?)?$/.test(unit)
+}
+const getMoratoriumStatus = (moratorium, today) => {
+  if (!moratorium) return { code: 'none', daysRemaining: null }
+  const daysUntilStart = Math.ceil((Date.parse(`${moratorium.startsOn}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000)
+  const daysRemaining = Math.ceil((Date.parse(`${moratorium.expiresOn}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000)
+  if (daysUntilStart > 0) return { code: 'upcoming', daysRemaining, daysUntilStart }
+  if (daysRemaining < 0) return { code: 'expired', daysRemaining }
+  if (daysRemaining <= MORATORIUM_WARNING_DAYS) return { code: 'soon', daysRemaining }
+  return { code: 'active', daysRemaining }
+}
 const pmePayload = (p) => ({
   nom: p.nom.trim(), type: p.type || '', num_aut: p.numAut || '', date_aut: p.dateAut || null, exp_aut: p.expAut || null,
   date_agr: p.dateAgr || null, exp_agr: p.expAgr || null, contact: p.contact || '', fonction: p.fonction || '',
@@ -191,6 +221,7 @@ export default function App() {
   const [pmes, setPmes] = useState([])
   const [archivedPmes, setArchivedPmes] = useState([])
   const [achats, setAchats] = useState([])
+  const [moratoria, setMoratoria] = useState([])
   const [documents, setDocuments] = useState([])
   const [inspections, setInspections] = useState([])
   const [dossierHistory, setDossierHistory] = useState([])
@@ -200,6 +231,17 @@ export default function App() {
   const [cfg, setCfg] = useState({ alerte: 30, inactif: 90 })
   const [notice, setNotice] = useState('')
   const [tab, setTab] = useState('dash')
+  const [summaryQuery, setSummaryQuery] = useState('')
+  const [summaryAuthorizationFilter, setSummaryAuthorizationFilter] = useState('')
+  const [summaryMoratoriumFilter, setSummaryMoratoriumFilter] = useState('')
+  const [summarySort, setSummarySort] = useState('name')
+  const [summarySortDirection, setSummarySortDirection] = useState('asc')
+  const [moratoriumFormOpen, setMoratoriumFormOpen] = useState(false)
+  const [moratoriumHistoryPme, setMoratoriumHistoryPme] = useState(null)
+  const [moratoriumBusy, setMoratoriumBusy] = useState(false)
+  const [moratoriumNotice, setMoratoriumNotice] = useState('')
+  const [moratoriumToday, setMoratoriumToday] = useState(todayKinshasa())
+  const moratoriumSubmissionLock = useRef(false)
   const [dashboardPeriod, setDashboardPeriod] = useState('month')
   const [dashboardActivities, setDashboardActivities] = useState([])
   const [dashboardActivityBusy, setDashboardActivityBusy] = useState(false)
@@ -269,7 +311,7 @@ export default function App() {
   useEffect(() => {
     if (!supabase || session === undefined) return
     let cancelled = false
-    setDataReady(false); setRole(null); setAccessError(''); setNotice('')
+    setDataReady(false); setRole(null); setAccessError(''); setNotice(''); setMoratoria([])
     const load = async () => {
       if (!session) {
         setRole(null); setPermissions([]); setPmes([]); setArchivedPmes([]); setAchats([]); setDataReady(true)
@@ -307,7 +349,7 @@ export default function App() {
         return
       }
 
-      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows] = await Promise.all([
+      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows, moratoriumRows] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
         supabase.from('settings').select('alerte, inactif').eq('id', true).single(),
@@ -315,11 +357,12 @@ export default function App() {
         fetchAll('pme_dossier_history', 'created_at', false),
         fetchAll('pme_authorization_history', 'created_at', false),
         fetchAll('pme_inspection_reports', 'inspection_date', false),
+        fetchAll('pme_moratoria', 'created_at', false),
       ])
       if (settingsResult.error) throw settingsResult.error
       if (cancelled) return
       const allPmes = pmeRows.map(toPme)
-      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
+      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
     }
     load().catch(error => { if (!cancelled) { setAccessError(error.message); setDataReady(true) } })
     return () => { cancelled = true }
@@ -373,6 +416,9 @@ export default function App() {
   const canCreatePurchase = hasPermission('purchase.create')
   const canUpdatePurchase = hasPermission('purchase.update')
   const canDeletePurchase = hasPermission('purchase.delete')
+  const canValidatePurchases = hasPermission('purchase.validate')
+  const canManageMoratoria = hasPermission('moratorium.manage')
+  const canReadSummary = hasPermission('pme.read') && hasPermission('purchase.read')
   const canManageDossier = hasPermission('pme.dossier.manage')
   const canManageAuthorization = hasPermission('pme.authorization.manage')
   const canArchivePme = hasPermission('pme.archive')
@@ -384,6 +430,15 @@ export default function App() {
   const canReadActivities = hasPermission('activity.read')
   const canReadReports = hasPermission('reports.read')
   const reportError = (error) => setNotice(`Opération impossible : ${error.message}`)
+
+  useEffect(() => {
+    const refreshToday = () => {
+      const currentDay = todayKinshasa()
+      setMoratoriumToday(previous => previous === currentDay ? previous : currentDay)
+    }
+    const timer = window.setInterval(refreshToday, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (tab !== 'users' || !canManageStaff) return
@@ -436,7 +491,7 @@ export default function App() {
   }, [canReadActivities, session?.user?.id, tab])
 
   useEffect(() => {
-    if (tab !== 'dash' || !session?.user?.id || !role) return
+    if (!['dash', 'summary'].includes(tab) || !session?.user?.id || !role) return
     let active = true
     const refreshPmes = async () => {
       try {
@@ -457,10 +512,19 @@ export default function App() {
         if (active) reportError(error)
       }
     }
+    const refreshMoratoria = async () => {
+      try {
+        const rows = sortMoratoriaLatestFirst((await fetchAll('pme_moratoria', 'created_at', false)).map(toMoratorium))
+        if (active) setMoratoria(rows)
+      } catch (error) {
+        if (active) reportError(error)
+      }
+    }
     const refresh = () => {
       if (document.visibilityState === 'visible') {
         refreshPmes()
         refreshPurchases()
+        refreshMoratoria()
       }
     }
     const interval = window.setInterval(refresh, 60_000)
@@ -573,6 +637,42 @@ export default function App() {
     amount: achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null)
       .reduce((sum, purchase) => sum + Number(purchase.montantTotal), 0),
   })).filter(total => achats.some(purchase => purchase.devise === total.currency && purchase.montantTotal != null))
+  const summaryYear = Number(moratoriumToday.slice(0, 4))
+  const moratoriumByPme = new Map()
+  for (const moratorium of moratoria) {
+    if (!moratoriumByPme.has(moratorium.pmeId)) moratoriumByPme.set(moratorium.pmeId, moratorium)
+  }
+  const summaryRows = pmes.map(pme => {
+    const moratorium = moratoriumByPme.get(pme.id) || null
+    const moratoriumStatus = getMoratoriumStatus(moratorium, moratoriumToday)
+    const authorizationStatus = isAuthorizationExpired(pme.authorizationStatus, pme.authorizationExpiryDate)
+      ? 'EXPIRE'
+      : pme.authorizationStatus === 'AUTORISE'
+        ? 'AUTORISE'
+        : pme.authorizationStatus === 'NON_CONFORME'
+          ? 'NON_CONFORME'
+          : 'EN_ATTENTE'
+    const trashBagQuantity = achats.reduce((sum, purchase) => {
+      if (purchase.pmeId !== pme.id || purchase.status !== 'VALIDE' || !isTrashBagPurchase(purchase)) return sum
+      const purchaseYear = Number(String(purchase.date || '').slice(0, 4))
+      return purchaseYear === summaryYear && purchase.date <= moratoriumToday ? sum + Number(purchase.qte || 0) : sum
+    }, 0)
+    return { pme, moratorium, moratoriumStatus, authorizationStatus, trashBagQuantity }
+  })
+  const filteredSummaryRows = summaryRows
+    .filter(row => !summaryQuery.trim() || row.pme.nom.toLowerCase().includes(summaryQuery.trim().toLowerCase()))
+    .filter(row => !summaryAuthorizationFilter || row.authorizationStatus === summaryAuthorizationFilter)
+    .filter(row => !summaryMoratoriumFilter || row.moratoriumStatus.code === summaryMoratoriumFilter)
+    .sort((a, b) => {
+      const direction = summarySortDirection === 'asc' ? 1 : -1
+      if (summarySort === 'expiry') {
+        if (!a.moratorium) return b.moratorium ? 1 : 0
+        if (!b.moratorium) return -1
+        return a.moratorium.expiresOn.localeCompare(b.moratorium.expiresOn) * direction
+      }
+      if (summarySort === 'bags') return (a.trashBagQuantity - b.trashBagQuantity) * direction
+      return a.pme.nom.localeCompare(b.pme.nom, 'fr', { sensitivity: 'base' }) * direction
+    })
   useEffect(() => {
     if (tab !== 'dash' || !canReadActivities || !dashboardBuckets.length) return
     let active = true
@@ -787,6 +887,74 @@ export default function App() {
     if (error) { reportError(error); return }
     setAchats(current => current.filter(a => a.id !== id))
   }
+  const updatePurchaseStatus = async (purchase, status) => {
+    if (!canValidatePurchases || !['EN_ATTENTE', 'VALIDE', 'ANNULE'].includes(status)) return
+    const { data, error } = await supabase.from('achats').update({ status }).eq('id', purchase.id).select().single()
+    if (error) { reportError(error); return }
+    setAchats(current => current.map(item => item.id === purchase.id ? toAchat(data) : item))
+    setNotice(`Achat ${status === 'VALIDE' ? 'validé' : status === 'ANNULE' ? 'annulé' : 'remis en attente'}.`)
+  }
+  const saveMoratorium = async form => {
+    if (!canManageMoratoria || moratoriumSubmissionLock.current) return
+    moratoriumSubmissionLock.current = true
+    setMoratoriumBusy(true)
+    let uploadedPath = ''
+    try {
+      if (form.file) {
+        const extension = form.file.name.split('.').pop()?.toLowerCase() || ''
+        const safeName = form.file.name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-100)
+        const uniquePart = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+        uploadedPath = `${form.pmeId}/${uniquePart}-${safeName || `justificatif.${extension}`}`
+        const { error: uploadError } = await supabase.storage.from('pme-moratoria').upload(uploadedPath, form.file, {
+          contentType: form.file.type,
+          upsert: false,
+        })
+        if (uploadError) throw uploadError
+      }
+      const { data, error } = await supabase.from('pme_moratoria').insert({
+        pme_id: Number(form.pmeId),
+        starts_on: form.startsOn,
+        expires_on: form.expiresOn,
+        reason: form.reason.trim(),
+        observations: form.observations.trim(),
+        attachment_path: uploadedPath || null,
+        attachment_name: form.file?.name || null,
+      }).select().single()
+      if (error) throw error
+      setMoratoria(current => sortMoratoriaLatestFirst([toMoratorium(data), ...current]))
+      setMoratoriumFormOpen(false)
+      setMoratoriumNotice(`Moratoire enregistré pour ${pmes.find(pme => pme.id === Number(form.pmeId))?.nom || 'la PME'}.`)
+    } catch (error) {
+      if (uploadedPath) {
+        const { error: cleanupError } = await supabase.storage.from('pme-moratoria').remove([uploadedPath])
+        if (cleanupError) {
+          setMoratoriumNotice(`Le moratoire n’a pas été enregistré (${error.message}) et le justificatif temporaire n’a pas pu être supprimé (${cleanupError.message}).`)
+          setMoratoriumBusy(false)
+          return
+        }
+      }
+      setMoratoriumNotice(`Impossible d’enregistrer le moratoire : ${error.message}`)
+    } finally {
+      moratoriumSubmissionLock.current = false
+      setMoratoriumBusy(false)
+    }
+  }
+  const openMoratoriumAttachment = async moratorium => {
+    if (!moratorium.attachmentPath) return
+    const newWindow = window.open('about:blank', '_blank')
+    if (!newWindow) {
+      setNotice('Autorise les fenêtres contextuelles pour ouvrir le justificatif.')
+      return
+    }
+    newWindow.opener = null
+    const { data, error } = await supabase.storage.from('pme-moratoria').createSignedUrl(moratorium.attachmentPath, 60)
+    if (error) {
+      newWindow.close()
+      reportError(error)
+      return
+    }
+    newWindow.location.replace(data.signedUrl)
+  }
   const saveSettings = async (next) => {
     setCfg(next)
     const { error } = await supabase.from('settings').update(next).eq('id', true)
@@ -870,6 +1038,48 @@ export default function App() {
     })),
   ]
   const activityDashboardCards = dashboardActivityByStaff.map(item => ({ label: item.label, value: item.value }))
+  const summaryExportData = filteredSummaryRows.map(row => [
+    row.pme.nom,
+    ({ AUTORISE: 'Autorisée', EN_ATTENTE: 'En attente', EXPIRE: 'Expirée', NON_CONFORME: 'Non autorisée' })[row.authorizationStatus],
+    MORATORIUM_STATUS_LABELS[row.moratoriumStatus.code],
+    row.moratoriumStatus.daysRemaining,
+    row.moratorium?.expiresOn || '',
+    row.trashBagQuantity,
+  ])
+  const exportSummaryExcel = () => {
+    const blob = createXlsxBlob([{
+      name: 'Tableau recapitulatif',
+      headers: ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours avant expiration', 'Date de fin du moratoire', `Sacs achetés en ${summaryYear}`],
+      rows: summaryExportData,
+    }])
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `tableau-recapitulatif-pme-${summaryYear}.xlsx`
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const exportSummaryPdf = () => {
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      setNotice('Autorise les fenêtres contextuelles pour ouvrir l’export PDF.')
+      return
+    }
+    const headers = ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours restants', 'Fin du moratoire', `Sacs achetés en ${summaryYear}`]
+    const rows = summaryExportData.map(row => row.map(value => `<td>${xmlEscape(value == null ? '—' : value)}</td>`).join(''))
+    printWindow.document.open()
+    printWindow.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Tableau récapitulatif des PME</title><style>@page{size:A4 landscape;margin:14mm}body{font-family:Arial,sans-serif;color:#1d2b3a}h1{color:#102a46}p{color:#4b5c70;font-size:12px}table{width:100%;border-collapse:collapse;font-size:10px}th,td{border:1px solid #dce5ee;padding:7px;text-align:left}th{color:#fff;background:#183c63}tbody tr:nth-child(even){background:#f2f6fb}</style></head><body><h1>Tableau récapitulatif des PME</h1><p>REGEDEK PME · Données au ${xmlEscape(fmt(moratoriumToday))} · Achats validés pour l’année civile ${summaryYear}</p><table><thead><tr>${headers.map(header => `<th>${xmlEscape(header)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row}</tr>`).join('')}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`)
+    printWindow.document.close()
+    setNotice('La fenêtre d’impression est ouverte. Choisis « Enregistrer au format PDF ».')
+  }
+  const sortSummaryBy = key => {
+    if (summarySort === key) setSummarySortDirection(current => current === 'asc' ? 'desc' : 'asc')
+    else {
+      setSummarySort(key)
+      setSummarySortDirection('asc')
+    }
+  }
 
   return (<>
     <header className="app-header">
@@ -878,7 +1088,7 @@ export default function App() {
     </header>
     <div className="app-navigation">
       <nav aria-label="Navigation principale">
-        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(canArchivePme ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ...(canManageStaff ? [['users', 'Utilisateurs']] : []), ...(canReadActivities ? [['activity', 'Activités']] : []), ...(canReadReports ? [['reports', 'Rapports']] : []), ['cfg', 'Réglages']].map(([k, l]) =>
+        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(canReadSummary ? [['summary', 'TABLEAU RÉCAPITULATIF']] : []), ...(canArchivePme ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ...(canManageStaff ? [['users', 'Utilisateurs']] : []), ...(canReadActivities ? [['activity', 'Activités']] : []), ...(canReadReports ? [['reports', 'Rapports']] : []), ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k === 'activity') setUnreadActivityCount(0); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>
             {l}{k === 'activity' && unreadActivityCount > 0 && <span className="activity-count">{unreadActivityCount}</span>}
           </button>)}
@@ -1024,13 +1234,60 @@ export default function App() {
 
       {tab === 'archived' && canArchivePme && <ArchivedPmeTable rows={archivedPmes} onRestore={pme => setPmeArchived(pme, false)} />}
 
+      {tab === 'summary' && canReadSummary && <section className="pme-summary">
+        <div className="row summary-heading">
+          <div><h2>TABLEAU RÉCAPITULATIF DES PME</h2><p>Échéances calculées au {fmt(moratoriumToday)} · achats de sacs validés en {summaryYear} (année de Kinshasa).</p></div>
+          <div className="row summary-actions">
+            <button className="btn sec" onClick={exportSummaryPdf}>Exporter PDF</button>
+            <button className="btn sec" onClick={exportSummaryExcel}>Exporter Excel</button>
+            {canManageMoratoria && <button className="btn" disabled={!pmes.length} onClick={() => { setMoratoriumNotice(''); setMoratoriumFormOpen(true) }}>Attribuer un moratoire</button>}
+          </div>
+        </div>
+        {moratoriumNotice && <p role="status" className="notice">{moratoriumNotice}</p>}
+        <div className="bar filters summary-filters">
+          <input aria-label="Rechercher une PME" placeholder="Rechercher par nom de PME" value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} />
+          <select aria-label="Filtrer par statut d’autorisation" value={summaryAuthorizationFilter} onChange={event => setSummaryAuthorizationFilter(event.target.value)}>
+            <option value="">Tous les statuts d’autorisation</option>
+            <option value="AUTORISE">Autorisée</option><option value="EN_ATTENTE">En attente</option><option value="EXPIRE">Expirée</option><option value="NON_CONFORME">Non autorisée</option>
+          </select>
+          <select aria-label="Filtrer par statut du moratoire" value={summaryMoratoriumFilter} onChange={event => setSummaryMoratoriumFilter(event.target.value)}>
+            <option value="">Tous les statuts du moratoire</option>
+            {Object.entries(MORATORIUM_STATUS_LABELS).map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+          </select>
+          <select aria-label="Trier le tableau" value={`${summarySort}:${summarySortDirection}`} onChange={event => { const [key, direction] = event.target.value.split(':'); setSummarySort(key); setSummarySortDirection(direction) }}>
+            <option value="name:asc">Trier par nom (A–Z)</option><option value="name:desc">Trier par nom (Z–A)</option>
+            <option value="expiry:asc">Expiration du moratoire (plus proche)</option><option value="expiry:desc">Expiration du moratoire (plus éloignée)</option>
+            <option value="bags:desc">Achats de sacs (plus nombreux)</option><option value="bags:asc">Achats de sacs (moins nombreux)</option>
+          </select>
+        </div>
+        <div className="tw summary-table-wrap"><table className="summary-table">
+          <thead><tr><th>Nom de la PME</th><th>Statut de l’autorisation</th><th>Statut du moratoire</th><th><button className="table-sort" onClick={() => sortSummaryBy('expiry')}>Jours restants · expiration</button></th><th><button className="table-sort" onClick={() => sortSummaryBy('bags')}>Sacs achetés en {summaryYear}</button></th><th>Actions</th></tr></thead>
+          <tbody>{filteredSummaryRows.map(row => <tr key={row.pme.id}>
+            <td><button className="summary-company-link" onClick={() => setDetail(row.pme)}>{row.pme.nom}</button></td>
+            <td><Tag s={{ label: ({ AUTORISE: 'Autorisée', EN_ATTENTE: 'En attente', EXPIRE: 'Expirée', NON_CONFORME: 'Non autorisée' })[row.authorizationStatus], cls: ({ AUTORISE: 'vert', EN_ATTENTE: 'orange', EXPIRE: 'rouge', NON_CONFORME: 'rouge' })[row.authorizationStatus] }} /></td>
+            <td><Tag s={{ label: MORATORIUM_STATUS_LABELS[row.moratoriumStatus.code], cls: MORATORIUM_STATUS_COLORS[row.moratoriumStatus.code] }} />{row.moratorium && <small className="summary-date">Du {fmt(row.moratorium.startsOn)} au {fmt(row.moratorium.expiresOn)}</small>}</td>
+            <td>{!row.moratorium ? '—' : row.moratoriumStatus.daysRemaining < 0 ? `Expiré depuis ${Math.abs(row.moratoriumStatus.daysRemaining)} j` : row.moratoriumStatus.code === 'upcoming' ? `Débute dans ${row.moratoriumStatus.daysUntilStart} j` : `${row.moratoriumStatus.daysRemaining} j`}</td>
+            <td>{row.trashBagQuantity.toLocaleString('fr-FR')}</td>
+            <td><div className="row summary-row-actions">
+              {row.moratorium && <button className="btn sec" onClick={() => setMoratoriumHistoryPme(row.pme)}>Historique</button>}
+              {row.moratorium?.attachmentPath && <button className="btn sec" onClick={() => openMoratoriumAttachment(row.moratorium)}>Justificatif</button>}
+            </div></td>
+          </tr>)}</tbody>
+        </table></div>
+        {!filteredSummaryRows.length && <p className="summary-empty">Aucune PME ne correspond aux filtres.</p>}
+        <p className="metric-note">Seuls les achats validés dont la désignation identifie des sacs-poubelle et dont l’unité est « sac(s) » sont comptés. Les achats annulés et les anciennes désignations non renseignées sont exclus. L’historique des années précédentes est conservé.</p>
+      </section>}
+
       {tab === 'achats' && <>
         <div className="bar">{canCreatePurchase && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '', designation: '', unite: 'sacs', prixUnitaire: '', devise: 'CDF' })}>+ Enregistrer un achat</button>}</div>
-        <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Produit / service</th><th>Quantité</th><th>Montant</th><th></th></tr></thead><tbody>
+        <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Produit / service</th><th>Quantité</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody>
           {[...achats].sort((a, b) => b.date.localeCompare(a.date)).map(a => <tr key={a.id}>
             <td>{fmt(a.date)}</td><td>{rows.find(p => p.id === a.pmeId)?.numero ?? '—'} — {[...pmes, ...archivedPmes].find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{a.designation || '—'}</td>
             <td>{Number(a.qte).toLocaleString('fr')} {a.unite || 'sacs'}</td><td>{a.montantTotal == null ? '—' : `${Number(a.montantTotal).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${a.devise}`}</td>
-            <td>{(canUpdatePurchase || canDeletePurchase) && <div className="row">
+            <td><Tag s={{ label: PURCHASE_STATUS_LABELS[a.status], cls: PURCHASE_STATUS_COLORS[a.status] }} /></td>
+            <td>{(canUpdatePurchase || canDeletePurchase || canValidatePurchases) && <div className="row">
+              {canValidatePurchases && a.status !== 'VALIDE' && <button className="btn sec" onClick={() => updatePurchaseStatus(a, 'VALIDE')}>Valider</button>}
+              {canValidatePurchases && a.status !== 'ANNULE' && <button className="btn sec" onClick={() => updatePurchaseStatus(a, 'ANNULE')}>Annuler</button>}
               {canUpdatePurchase && <button className="btn sec" onClick={() => setAchatFor(a)}>Modifier</button>}
               {canDeletePurchase && <button className="btn sec" onClick={() => delAchat(a.id)}>Suppr.</button>}
             </div>}</td></tr>)}
@@ -1070,6 +1327,14 @@ export default function App() {
 
     {edit && <PmeForm p={edit} onSave={savePme} onClose={() => setEdit(null)} />}
     {achatFor && <AchatForm a={achatFor} pmes={pmes} onSave={saveAchat} onClose={() => setAchatFor(null)} />}
+    {moratoriumFormOpen && <MoratoriumForm pmes={pmes} today={moratoriumToday} busy={moratoriumBusy} onSave={saveMoratorium} onClose={() => setMoratoriumFormOpen(false)} />}
+    {moratoriumHistoryPme && <MoratoriumHistory
+      pme={moratoriumHistoryPme}
+      rows={moratoria.filter(item => item.pmeId === moratoriumHistoryPme.id)}
+      today={moratoriumToday}
+      onOpenAttachment={openMoratoriumAttachment}
+      onClose={() => setMoratoriumHistoryPme(null)}
+    />}
       {detail && (() => { const r = rows.find(x => x.id === detail.id); if (!r) return null; const pmeDocs = documents.filter(d => d.pmeId === r.id); const pmeInspections = inspections.filter(x => x.pmeId === r.id); const dossierEvents = dossierHistory.filter(h => h.pme_id === r.id); const authorizationEvents = authorizationHistory.filter(h => h.pme_id === r.id); const docStats = documentStats(r.id); return (
       <div className="modal" onClick={() => setDetail(null)}><div className={`box detail${isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? ' pme-expired-detail' : ''}`} onClick={e => e.stopPropagation()}>
         <h2>PME n° {r.numero} — {r.nom} <small>({r.type || '—'})</small></h2>
@@ -1816,7 +2081,7 @@ function AchatForm({ a, pmes, onSave, onClose }) {
     <div className="grid">
       <div className="full"><label>PME</label><select value={f.pmeId} onChange={e => setF({ ...f, pmeId: +e.target.value })}>{[...pmes].sort((a, b) => a.id - b.id).map((p, index) => <option key={p.id} value={p.id}>{index + 1} — {p.nom}</option>)}</select></div>
       <div><label>Date d’achat</label><input type="date" value={f.date} onChange={set('date')} required /></div>
-      <div><label>Désignation du produit ou service</label><input value={f.designation} onChange={set('designation')} placeholder="Ex. Sacs de charbon" required={!f.id} /></div>
+      <div><label>Désignation du produit ou service</label><input value={f.designation} onChange={set('designation')} placeholder="Ex. Sacs-poubelle" required={!f.id} /></div>
       <div><label>Quantité</label><input type="number" min="1" step="1" value={f.qte} onChange={set('qte')} required /></div>
       <div><label>Unité</label><input value={f.unite} onChange={set('unite')} required /></div>
       <div><label>Prix unitaire</label><input type="number" min="0" step="0.01" value={f.prixUnitaire} onChange={set('prixUnitaire')} required={!f.id} /></div>
@@ -1827,4 +2092,66 @@ function AchatForm({ a, pmes, onSave, onClose }) {
     <div className="row"><button className="btn sec" onClick={onClose}>Annuler</button>
       <button className="btn" onClick={submit}>Enregistrer</button></div>
   </div></div>
+}
+
+function MoratoriumForm({ pmes, today, busy, onSave, onClose }) {
+  const [form, setForm] = useState({
+    pmeId: pmes[0]?.id || '',
+    startsOn: today,
+    expiresOn: today,
+    reason: '',
+    observations: '',
+    file: null,
+  })
+  const [error, setError] = useState('')
+  const set = key => event => setForm(current => ({ ...current, [key]: event.target.value }))
+  const durationDays = form.startsOn && form.expiresOn
+    ? Math.floor((Date.parse(`${form.expiresOn}T00:00:00Z`) - Date.parse(`${form.startsOn}T00:00:00Z`)) / 86400000) + 1
+    : 0
+  const submit = () => {
+    if (!form.pmeId || !form.startsOn || !form.expiresOn || durationDays < 1 || !form.reason.trim()) {
+      setError('Choisis la PME, des dates cohérentes et renseigne le motif du moratoire.')
+      return
+    }
+    if (form.file && (form.file.size > 10 * 1024 * 1024 || !['application/pdf', 'image/jpeg', 'image/png'].includes(form.file.type))) {
+      setError('Le justificatif doit être un PDF, une image JPG ou PNG de 10 Mo maximum.')
+      return
+    }
+    setError('')
+    onSave(form)
+  }
+  return <div className="modal" onClick={() => { if (!busy) onClose() }}><section className="box moratorium-form" onClick={event => event.stopPropagation()}>
+    <h2>Attribuer un moratoire</h2>
+    <p>Cette attribution sera conservée dans l’historique et ne pourra pas être modifiée ou supprimée depuis l’application.</p>
+    {error && <p role="alert" className="notice">{error}</p>}
+    <div className="grid">
+      <div className="full"><label htmlFor="moratorium-pme">PME concernée</label><select id="moratorium-pme" value={form.pmeId} onChange={set('pmeId')} required>
+        {pmes.map(pme => <option key={pme.id} value={pme.id}>{pme.nom}</option>)}
+      </select></div>
+      <div><label htmlFor="moratorium-start">Date de début</label><input id="moratorium-start" type="date" value={form.startsOn} onChange={set('startsOn')} required /></div>
+      <div><label htmlFor="moratorium-expiry">Date de fin</label><input id="moratorium-expiry" type="date" min={form.startsOn} value={form.expiresOn} onChange={set('expiresOn')} required /></div>
+      <p className="full moratorium-duration">Durée calculée : <strong>{durationDays > 0 ? `${durationDays} jour${durationDays > 1 ? 's' : ''}` : 'dates à vérifier'}</strong></p>
+      <div className="full"><label htmlFor="moratorium-reason">Motif de l’attribution</label><textarea id="moratorium-reason" value={form.reason} onChange={set('reason')} required /></div>
+      <div className="full"><label htmlFor="moratorium-observations">Observations complémentaires</label><textarea id="moratorium-observations" value={form.observations} onChange={set('observations')} /></div>
+      <div className="full"><label htmlFor="moratorium-file">Pièce justificative (facultative, PDF/JPG/PNG — 10 Mo max.)</label><input id="moratorium-file" type="file" accept="application/pdf,image/jpeg,image/png" onChange={event => setForm(current => ({ ...current, file: event.target.files?.[0] || null }))} /></div>
+      <p className="full metric-note">L’administrateur qui accorde le moratoire est enregistré automatiquement à partir de la session authentifiée.</p>
+    </div>
+    <div className="row"><button className="btn sec" disabled={busy} onClick={onClose}>Annuler</button><button className="btn" disabled={busy || !pmes.length} onClick={submit}>{busy ? 'Enregistrement…' : 'Enregistrer le moratoire'}</button></div>
+  </section></div>
+}
+
+function MoratoriumHistory({ pme, rows, today, onOpenAttachment, onClose }) {
+  return <div className="modal" onClick={onClose}><section className="box moratorium-history" onClick={event => event.stopPropagation()}>
+    <div className="row"><h2>Historique des moratoires — {pme.nom}</h2><button className="btn sec" onClick={onClose}>Fermer</button></div>
+    {rows.length ? rows.map(moratorium => {
+      const status = getMoratoriumStatus(moratorium, today)
+      return <article className="moratorium-history-item" key={moratorium.id}>
+        <div className="row"><strong>{fmt(moratorium.startsOn)} — {fmt(moratorium.expiresOn)} · {moratorium.durationDays} jour(s)</strong><Tag s={{ label: MORATORIUM_STATUS_LABELS[status.code], cls: MORATORIUM_STATUS_COLORS[status.code] }} /></div>
+        <p><strong>Motif :</strong> {moratorium.reason}</p>
+        <p><strong>Observations :</strong> {moratorium.observations || '—'}</p>
+        <p><strong>Accordé par :</strong> {moratorium.grantedByName}{moratorium.grantedByEmail ? ` · ${moratorium.grantedByEmail}` : ''} · <strong>Enregistré le :</strong> {new Date(moratorium.createdAt).toLocaleString('fr-FR')}</p>
+        {moratorium.attachmentPath && <button className="btn sec" onClick={() => onOpenAttachment(moratorium)}>Ouvrir {moratorium.attachmentName || 'le justificatif'}</button>}
+      </article>
+    }) : <p>Aucun moratoire enregistré pour cette PME.</p>}
+  </section></div>
 }

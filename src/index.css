@@ -611,6 +611,155 @@ select {
   width: 100%;
 }
 
+.pme-summary {
+  display: grid;
+  gap: 14px;
+}
+
+.summary-heading {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 0;
+}
+
+.summary-heading h2 {
+  margin: 0 0 4px;
+  color: var(--navy-900);
+  font-size: clamp(18px, 2vw, 23px);
+}
+
+.summary-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.summary-actions {
+  justify-content: flex-end;
+}
+
+.summary-filters {
+  margin-bottom: 0;
+}
+
+.summary-table-wrap {
+  width: 100%;
+}
+
+.summary-table {
+  min-width: 1040px;
+}
+
+.summary-table th,
+.summary-table td {
+  padding: 11px 12px;
+}
+
+.summary-table th:nth-child(1) { width: 20%; }
+.summary-table th:nth-child(2) { width: 15%; }
+.summary-table th:nth-child(3) { width: 21%; }
+.summary-table th:nth-child(4) { width: 17%; }
+.summary-table th:nth-child(5) { width: 13%; }
+.summary-table th:nth-child(6) { width: 14%; }
+
+.table-sort {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  text-transform: inherit;
+}
+
+.summary-company-link {
+  padding: 0;
+  border: 0;
+  color: var(--blue-700);
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.summary-company-link:hover {
+  color: var(--navy-950);
+}
+
+.summary-date {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.summary-row-actions {
+  gap: 6px;
+}
+
+.summary-row-actions .btn {
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.summary-empty {
+  margin: 0;
+  padding: 20px;
+  border: 1px dashed #b9c9d9;
+  border-radius: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.moratorium-form,
+.moratorium-history {
+  display: grid;
+  gap: 12px;
+}
+
+.moratorium-form > h2,
+.moratorium-form > p,
+.moratorium-history h2 {
+  margin: 0;
+}
+
+.moratorium-form > p:not(.notice),
+.moratorium-history-item p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.moratorium-form .grid {
+  margin: 0;
+}
+
+.moratorium-duration {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  color: var(--navy-900);
+  background: var(--blue-050);
+}
+
+.moratorium-history-item {
+  display: grid;
+  gap: 4px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.moratorium-history-item .row {
+  justify-content: space-between;
+}
+
+.moratorium-history-item p {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
 button.btn {
   min-height: 40px;
   padding: 9px 14px;
@@ -1013,6 +1162,14 @@ h2 {
   .filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .summary-heading {
+    flex-direction: column;
+  }
+
+  .summary-actions {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 600px) {
@@ -1055,6 +1212,20 @@ h2 {
 
   .filters {
     grid-template-columns: 1fr;
+  }
+
+  .summary-actions {
+    width: 100%;
+  }
+
+  .summary-actions > .btn {
+    flex: 1 1 130px;
+  }
+
+  .moratorium-history > .row,
+  .moratorium-history-item > .row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .dashboard-period-toolbar {
