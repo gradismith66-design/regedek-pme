@@ -32,7 +32,7 @@ where lower(email) = lower('agent@regedek.cd')
 on conflict (user_id) do update set role = excluded.role;
 ```
 
-- `admin` : consultation, modification et suppression ; gestion des regles de statut.
+- `admin` : consultation, modification et archivage/restauration des PME ; gestion des regles de statut. Les PME archivees restent disponibles dans l'onglet **PME archivees** et leurs achats, documents et historiques sont conserves.
 - `agent` : consultation, creation et modification ; pas de suppression ni de changement des regles.
 - `reader` : consultation seulement.
 
@@ -41,6 +41,8 @@ on conflict (user_id) do update set role = excluded.role;
 Applique les migrations `20261116115735` a `20261116122215` dans l'ordre. Elles ajoutent des statuts distincts pour le dossier et pour l'autorisation, les documents, les rapports append-only, les historiques, le stockage prive et la tache quotidienne d'expiration. Les PME existantes passent en `EN_COURS_DE_VERIFICATION` et `EN_ETUDE_ADMINISTRATIVE`; aucune autorisation n'est deduite des anciennes dates ou de la completude des dossiers. Les nouveaux dossiers commencent en `DOSSIER_NON_SOUMIS` et `EN_ETUDE_ADMINISTRATIVE`.
 
 Dans les roles actuels du projet, `agent` peut gerer le dossier, les documents et ajouter un rapport d'inspection append-only lorsque la PME est en attente d'inspection; seul `admin` peut changer une decision d'autorisation. Pour passer a `AUTORISE`, la reference, les dates coherentes, le nom et la fonction du signataire ainsi que le motif de decision sont obligatoires. Les fichiers sont conserves dans le bucket prive `pme-documents` et controles par les politiques Storage/RLS. La generation de l'attestation n'est disponible qu'une fois la decision officielle enregistree; son QR renvoie a la page publique de verification, qui ne montre que les champs publics de l'autorisation. L'image QR est generee par le service public api.qrserver.com avec uniquement cette URL de verification contenant le jeton aleatoire.
+
+Les PME ayant deja des evenements d'audit ne peuvent pas etre supprimees physiquement: leurs historiques sont conserves. La migration `20261117140500_archive_pmes.sql` ajoute l'archivage reserve a l'administrateur; les achats, documents et historiques restent lies a la PME et peuvent etre consultes apres restauration.
 
 ## Verification de la configuration de production
 

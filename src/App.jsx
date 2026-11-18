@@ -36,7 +36,7 @@ const toPme = (p) => ({
   authorizationAgentId: p.authorization_agent_id, authorizationUpdatedAt: p.authorization_updated_at,
   dossierUpdatedAt: p.dossier_updated_at, dossierUpdatedBy: p.dossier_updated_by,
   authoritySignerName: p.authority_signer_name || '', authoritySignerTitle: p.authority_signer_title || '',
-  verificationToken: p.authorization_verification_token,
+  verificationToken: p.authorization_verification_token, archivedAt: p.archived_at,
 })
 const toDocument = d => ({ id: d.id, pmeId: d.pme_id, name: d.document_name, required: d.is_required, status: d.status, path: d.storage_path, filename: d.original_filename, mime: d.mime_type, size: d.file_size, observations: d.observations, rejectionReason: d.rejection_reason, createdAt: d.created_at, updatedAt: d.updated_at })
 const toInspection = x => ({ id: x.id, pmeId: x.pme_id, result: x.result, observations: x.observations, date: x.inspection_date, inspectorId: x.inspector_id, createdAt: x.created_at })
@@ -74,6 +74,7 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState('')
   const [passwordRecovery, setPasswordRecovery] = useState(false)
   const [pmes, setPmes] = useState([])
+  const [archivedPmes, setArchivedPmes] = useState([])
   const [achats, setAchats] = useState([])
   const [documents, setDocuments] = useState([])
   const [inspections, setInspections] = useState([])
@@ -145,7 +146,7 @@ export default function App() {
     setDataReady(false); setRole(null); setAccessError(''); setNotice('')
     const load = async () => {
       if (!session) {
-        setPmes([]); setAchats([]); setDataReady(true)
+        setPmes([]); setArchivedPmes([]); setAchats([]); setDataReady(true)
         return
       }
 
@@ -183,7 +184,8 @@ export default function App() {
       ])
       if (settingsResult.error) throw settingsResult.error
       if (cancelled) return
-      setRole(nextRole); setPmes(pmeRows.map(toPme)); setAchats(achatRows.map(toAchat)); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
+      const allPmes = pmeRows.map(toPme)
+      setRole(nextRole); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
     }
     load().catch(error => { if (!cancelled) { setAccessError(error.message); setDataReady(true) } })
     return () => { cancelled = true }
@@ -360,11 +362,20 @@ export default function App() {
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&format=svg&data=${encodeURIComponent(verifyUrl.toString())}`
     setCertificate({ pme, verifyUrl: verifyUrl.toString(), qrUrl })
   }
-  const delPme = async (id) => {
-    if (!isAdmin || !confirm('Supprimer cette PME et ses achats ?')) return
-    const { error } = await supabase.from('pmes').delete().eq('id', id)
+  const setPmeArchived = async (pme, archived) => {
+    if (!isAdmin || !confirm(archived
+      ? `Archiver ${pme.nom} ? Ses achats, documents et historiques seront conservés.`
+      : `Restaurer ${pme.nom} dans la liste active ?`)) return
+    const { error } = await supabase.rpc('set_pme_archived', { p_pme_id: pme.id, p_archived: archived })
     if (error) { reportError(error); return }
-    setPmes(current => current.filter(p => p.id !== id)); setAchats(current => current.filter(a => a.pmeId !== id)); setDetail(null)
+    if (archived) {
+      setPmes(current => current.filter(item => item.id !== pme.id))
+      setArchivedPmes(current => [{ ...pme, archivedAt: new Date().toISOString() }, ...current])
+    } else {
+      setArchivedPmes(current => current.filter(item => item.id !== pme.id))
+      setPmes(current => [...current, { ...pme, archivedAt: null }])
+    }
+    setDetail(null)
   }
   const saveAchat = async (a) => {
     const { data, error } = await supabase.from('achats').insert({ pme_id: a.pmeId, date: a.date, qte: Number(a.qte), detail: a.detail || [] }).select().single()
@@ -418,7 +429,7 @@ export default function App() {
     <header>
       <Brand compact />
       <nav>
-        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
+        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(isAdmin ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>{l}</button>)}
       </nav>
       {session && <button className="btn sec sign-out" onClick={signOut}>Se déconnecter</button>}
@@ -515,14 +526,23 @@ export default function App() {
           {canEdit && <button className="btn" onClick={() => setEdit({ ...VIDE })}>+ Nouvelle PME</button>}
           <button className="btn sec" onClick={exportCsv}>Exporter CSV</button>
         </div>
-        <Table rows={filtered} onOpen={setDetail} canEdit={canEdit} isAdmin={isAdmin} />
+        <Table
+          rows={filtered}
+          onOpen={setDetail}
+          onEdit={pme => setEdit(pme)}
+          onArchive={pme => setPmeArchived(pme, true)}
+          canEdit={canEdit}
+          isAdmin={isAdmin}
+        />
       </>}
+
+      {tab === 'archived' && isAdmin && <ArchivedPmeTable rows={archivedPmes} onRestore={pme => setPmeArchived(pme, false)} />}
 
       {tab === 'achats' && <>
         <div className="bar">{canEdit && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '' })}>+ Enregistrer un achat</button>}</div>
         <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Quantité</th><th></th></tr></thead><tbody>
           {[...achats].sort((a, b) => b.date.localeCompare(a.date)).map(a => <tr key={a.id}>
-            <td>{fmt(a.date)}</td><td>{rows.find(p => p.id === a.pmeId)?.numero ?? '—'} — {pmes.find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{Number(a.qte).toLocaleString('fr')}</td>
+            <td>{fmt(a.date)}</td><td>{rows.find(p => p.id === a.pmeId)?.numero ?? '—'} — {[...pmes, ...archivedPmes].find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{Number(a.qte).toLocaleString('fr')}</td>
             <td>{isAdmin && <button className="btn sec" onClick={() => delAchat(a.id)}>Suppr.</button>}</td></tr>)}
         </tbody></table></div>
       </>}
@@ -577,7 +597,7 @@ export default function App() {
         <h2 className="subhead">Achats ({r.totalSacs.toLocaleString('fr')} sacs)</h2>
         {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {Number(a.qte).toLocaleString('fr')} sacs</li>)}</ul> : <p>Aucun achat.</p>}
         <div className="row">
-          {isAdmin && <button className="btn red" onClick={() => delPme(r.id)}>Supprimer</button>}
+          {isAdmin && <button className="btn red" onClick={() => setPmeArchived(r, true)}>Archiver la PME</button>}
           {canEdit && <button className="btn sec" onClick={() => { setDetail(null); setAchatFor({ pmeId: r.id, date: new Date().toISOString().slice(0, 10), qte: '' }) }}>+ Achat</button>}
           {canEdit && <button className="btn" onClick={() => { setDetail(null); setEdit(pmes.find(p => p.id === r.id)) }}>Modifier</button>}
         </div>
@@ -692,7 +712,7 @@ function PasswordRecovery({ busy, notice, onSave }) {
   </section></main>
 }
 
-function Table({ rows, onOpen }) {
+function Table({ rows, onOpen, onEdit, onArchive, canEdit, isAdmin }) {
   return <div className="tw"><table className="pme-table"><thead><tr>
     <th>N° PME</th><th>Entreprise</th><th>Catégorie</th><th>Statut du dossier</th><th>Autorisation REGEDEK</th><th>Décision réglementaire</th><th>Échéance REGEDEK historique</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
   </tr></thead><tbody>
@@ -707,10 +727,35 @@ function Table({ rows, onOpen }) {
       <td data-label="Statut ministériel"><Tag s={r.sAgr} /></td>
       <td data-label="Expiration ministérielle">{fmt(r.expAgr)}</td>
       <td data-label="Téléphone">{r.tel || '—'}</td>
-      <td data-label="Actions"><button className="btn sec" onClick={(e) => { e.stopPropagation(); onOpen(r) }}>Voir</button></td>
+      <td data-label="Actions">
+        <div className="row">
+          <button className="btn sec" onClick={(e) => { e.stopPropagation(); onOpen(r) }}>Voir</button>
+          {canEdit && <button className="btn" onClick={(e) => { e.stopPropagation(); onEdit(r) }}>Modifier</button>}
+          {isAdmin && <button className="btn red" onClick={(e) => { e.stopPropagation(); onArchive(r) }}>Archiver</button>}
+        </div>
+      </td>
     </tr>)}
     {!rows.length && <tr><td colSpan="11">Aucun résultat.</td></tr>}
   </tbody></table></div>
+}
+
+function ArchivedPmeTable({ rows, onRestore }) {
+  return <section>
+    <h2>PME archivées</h2>
+    <p>Les PME archivées sont retirées du registre actif, mais leurs achats, documents et historiques sont conservés.</p>
+    <div className="tw"><table className="pme-table"><thead><tr>
+      <th>Entreprise</th><th>Catégorie</th><th>Référence autorisation</th><th>Date d’archivage</th><th>Action</th>
+    </tr></thead><tbody>
+      {rows.map(pme => <tr key={pme.id}>
+        <td data-label="Entreprise"><b>{pme.nom}</b></td>
+        <td data-label="Catégorie">{pme.type || '—'}</td>
+        <td data-label="Référence autorisation">{pme.authorizationReference || pme.numAut || '—'}</td>
+        <td data-label="Date d’archivage">{pme.archivedAt ? new Date(pme.archivedAt).toLocaleString('fr-FR') : '—'}</td>
+        <td data-label="Action"><button className="btn sec" onClick={() => onRestore(pme)}>Restaurer</button></td>
+      </tr>)}
+      {!rows.length && <tr><td colSpan="5">Aucune PME archivée.</td></tr>}
+    </tbody></table></div>
+  </section>
 }
 
 function DossierEditor({ pme, onSave }) {
