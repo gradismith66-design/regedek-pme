@@ -29,6 +29,8 @@ const todayKinshasa = () => {
   const part = type => parts.find(item => item.type === type)?.value || ''
   return `${part('year')}-${part('month')}-${part('day')}`
 }
+const isAuthorizationExpired = (status, expiry) => status === 'EXPIRE'
+  || (status === 'AUTORISE' && Boolean(expiry) && expiry < todayKinshasa())
 const authTag = (status, expiry) => status === 'AUTORISE' && expiry && expiry < todayKinshasa()
   ? { label: 'Expiré', cls: 'rouge' }
   : ({ label: AUTH_LABELS[status] || AUTH_LABELS.EN_ETUDE_ADMINISTRATIVE, cls: AUTH_COLORS[status] || 'bleu' })
@@ -1029,7 +1031,7 @@ export default function App() {
     {edit && <PmeForm p={edit} onSave={savePme} onClose={() => setEdit(null)} />}
     {achatFor && <AchatForm a={achatFor} pmes={pmes} onSave={saveAchat} onClose={() => setAchatFor(null)} />}
       {detail && (() => { const r = rows.find(x => x.id === detail.id); if (!r) return null; const pmeDocs = documents.filter(d => d.pmeId === r.id); const pmeInspections = inspections.filter(x => x.pmeId === r.id); const dossierEvents = dossierHistory.filter(h => h.pme_id === r.id); const authorizationEvents = authorizationHistory.filter(h => h.pme_id === r.id); const docStats = documentStats(r.id); return (
-      <div className="modal" onClick={() => setDetail(null)}><div className="box detail" onClick={e => e.stopPropagation()}>
+      <div className="modal" onClick={() => setDetail(null)}><div className={`box detail${isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? ' pme-expired-detail' : ''}`} onClick={e => e.stopPropagation()}>
         <h2>PME n° {r.numero} — {r.nom} <small>({r.type || '—'})</small></h2>
         <div className="status-summary"><div><span>STATUT DU DOSSIER PME</span><Tag s={dossierTag(r.dossierStatus)} /></div><div><span>STATUT D'AUTORISATION REGEDEK</span><Tag s={authTag(r.authorizationStatus, r.authorizationExpiryDate)} /></div></div>
         <p><strong>Contact :</strong> {r.contact || '—'} · <strong>Tél :</strong> {r.tel || '—'} · <strong>E-mail :</strong> {r.email || '—'}<br />
@@ -1038,7 +1040,7 @@ export default function App() {
           <strong>Quartiers :</strong> {r.quartiers || '—'}<br />
           <strong>Statut juridique :</strong> {r.statutJuridique || '—'} · <strong>Source :</strong> {r.source || '—'}{r.note && <><br /><b>⚠ {r.note}</b></>}</p>
         <h2 className="subhead">Situation réglementaire et autorisation REGEDEK</h2>
-        <div className={`decision-banner decision-${r.authorizationStatus?.toLowerCase()}`}><strong>{r.authorizationStatus === 'AUTORISE' && r.authorizationExpiryDate >= todayKinshasa() ? 'CETTE ENTREPRISE EST OFFICIELLEMENT AUTORISÉE PAR LA REGEDEK' : r.authorizationStatus === 'EXPIRE' || (r.authorizationStatus === 'AUTORISE' && r.authorizationExpiryDate < todayKinshasa()) ? "L'AUTORISATION DE CETTE ENTREPRISE EST EXPIRÉE" : r.authorizationStatus === 'NON_CONFORME' ? 'CETTE ENTREPRISE EST DÉCLARÉE NON CONFORME' : AUTH_LABELS[r.authorizationStatus]}</strong></div>
+        <div className={`decision-banner ${isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? 'decision-expire' : `decision-${r.authorizationStatus?.toLowerCase()}`}`}><strong>{r.authorizationStatus === 'AUTORISE' && r.authorizationExpiryDate >= todayKinshasa() ? 'CETTE ENTREPRISE EST OFFICIELLEMENT AUTORISÉE PAR LA REGEDEK' : isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? "L'AUTORISATION DE CETTE ENTREPRISE EST EXPIRÉE" : r.authorizationStatus === 'NON_CONFORME' ? 'CETTE ENTREPRISE EST DÉCLARÉE NON CONFORME' : AUTH_LABELS[r.authorizationStatus]}</strong></div>
         <p><strong>Référence :</strong> {r.authorizationReference || '—'} · <strong>Délivrée le :</strong> {fmt(r.authorizationIssueDate)} · <strong>Expire le :</strong> {fmt(r.authorizationExpiryDate)}<br />
           <strong>Agent responsable :</strong> {r.authorizationAgentId || 'Non renseigné'} · <strong>Dernière mise à jour :</strong> {r.authorizationUpdatedAt ? new Date(r.authorizationUpdatedAt).toLocaleString('fr-FR') : '—'}<br />
           <strong>Signataire :</strong> {r.authoritySignerName || '—'} · {r.authoritySignerTitle || '—'}<br />
@@ -1063,8 +1065,10 @@ export default function App() {
           <strong>Transaction :</strong> {r.transaction} · <strong>Historique :</strong> {r.nbAutorisations || 1} enregistrement(s)<br />
           <strong>Activité :</strong> <Tag s={r.sAct} /> {r.sAct.jours !== null && `(dernier achat il y a ${r.sAct.jours} j)`}
         </p>
-        <h2 className="subhead">Achats ({r.totalSacs.toLocaleString('fr')} sacs)</h2>
-        {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {Number(a.qte).toLocaleString('fr')} sacs</li>)}</ul> : <p>Aucun achat.</p>}
+        <section className="purchase-detail">
+          <h2 className="subhead">Achats ({r.totalSacs.toLocaleString('fr')} sacs)</h2>
+          {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {Number(a.qte).toLocaleString('fr')} sacs</li>)}</ul> : <p>Aucun achat.</p>}
+        </section>
         <div className="row">
           {canArchivePme && <button className="btn red" onClick={() => setPmeArchived(r, true)}>Archiver la PME</button>}
           {canCreatePurchase && <button className="btn sec" onClick={() => { setDetail(null); setAchatFor({ pmeId: r.id, date: new Date().toISOString().slice(0, 10), qte: '' }) }}>+ Achat</button>}
@@ -1185,7 +1189,7 @@ function Table({ rows, onOpen, onEdit, onArchive, canEdit, canArchive }) {
   return <div className="tw"><table className="pme-table"><thead><tr>
     <th>N° PME</th><th>Entreprise</th><th>Catégorie</th><th>Statut du dossier</th><th>Autorisation REGEDEK</th><th>Décision réglementaire</th><th>Échéance REGEDEK historique</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
   </tr></thead><tbody>
-    {rows.map(r => <tr key={r.id} className="cl" onClick={() => onOpen(r)}>
+    {rows.map(r => <tr key={r.id} className={`cl${isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? ' pme-expired-row' : ''}`} onClick={() => onOpen(r)}>
       <td data-label="N° PME"><b>{r.numero}</b></td>
       <td data-label="Entreprise"><b>{r.nom}</b></td>
       <td data-label="Catégorie">{r.type || '—'}</td>
