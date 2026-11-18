@@ -132,16 +132,32 @@ const aggregateBuckets = (items, buckets, period, getDate, getValue = () => 1) =
 
 function HorizontalBarChart({ title, data, format = value => value.toLocaleString('fr-FR'), note }) {
   const max = Math.max(1, ...data.map(item => item.value))
+  const colors = ['#245b91', '#348b78', '#bf7a2a', '#7357a3', '#bd5260', '#3985a8', '#788b3f', '#9b6549']
   return <section className="dashboard-chart" aria-label={title}>
     <h3>{title}</h3>
     {note && <p className="chart-note">{note}</p>}
     {data.length ? <div className="horizontal-bars" role="list">
-      {data.map(item => <div className="horizontal-bar-row" role="listitem" key={item.label}>
+      {data.map((item, index) => <div className="horizontal-bar-row" role="listitem" key={item.label} style={{ '--bar-color': colors[index % colors.length] }}>
         <span className="horizontal-bar-label">{item.label}</span>
         <span className="horizontal-bar-track"><span className="horizontal-bar-fill" style={{ width: `${item.value ? Math.max(2, item.value / max * 100) : 0}%` }} /></span>
         <strong className="horizontal-bar-value">{format(item.value)}</strong>
       </div>)}
     </div> : <p className="chart-empty">Aucune donnée disponible pour cette période.</p>}
+  </section>
+}
+
+function DashboardStatSection({ title, cards, chart, note }) {
+  return <section className="dashboard-stat-section">
+    <div className="dashboard-stat-summary">
+      <h2>{title}</h2>
+      <div className="cards dashboard-stat-cards">
+        {cards.map(card => <div className={`card${card.onClick ? '' : ' static'}`} key={card.label} onClick={card.onClick}>
+          <b>{typeof card.value === 'number' ? card.value.toLocaleString('fr-FR') : card.value}</b><span>{card.label}</span>
+        </div>)}
+      </div>
+      {note && <p className="metric-note">{note}</p>}
+    </div>
+    <div className="dashboard-stat-visual">{chart}</div>
   </section>
 }
 
@@ -152,7 +168,7 @@ function TrendBarChart({ title, data, format = value => value.toLocaleString('fr
     {note && <p className="chart-note">{note}</p>}
     {data.length ? <div className="trend-scroll">
       <div className="trend-bars" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(24px, 1fr))` }}>
-        {data.map(item => <div className="trend-bar-column" key={item.key} title={`${item.label} : ${format(item.value)}`}>
+        {data.map((item, index) => <div className="trend-bar-column" key={item.key} title={`${item.label} : ${format(item.value)}`} style={{ '--trend-color': ['#245b91', '#348b78', '#bf7a2a', '#7357a3', '#bd5260', '#3985a8', '#788b3f', '#9b6549'][index % 8] }}>
           <strong>{format(item.value)}</strong>
           <div className="trend-bar-area"><span style={{ height: `${item.value ? Math.max(3, item.value / max * 100) : 0}%` }} /></div>
           <small>{item.label}</small>
@@ -557,13 +573,6 @@ export default function App() {
     amount: achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null)
       .reduce((sum, purchase) => sum + Number(purchase.montantTotal), 0),
   })).filter(total => achats.some(purchase => purchase.devise === total.currency && purchase.montantTotal != null))
-  const dashboardAuthorizationBars = [
-    { label: 'PME actives', value: pmes.length },
-    { label: 'Autorisations en cours', value: rows.filter(row => authTag(row.authorizationStatus, row.authorizationExpiryDate).label === 'Autorisé').length },
-    { label: 'En attente de décision', value: rows.filter(row => ['EN_ETUDE_ADMINISTRATIVE', 'EN_ATTENTE_INSPECTION', 'EN_ATTENTE_SIGNATURE'].includes(row.authorizationStatus)).length },
-    ...(archivedPmes.length ? [{ label: 'PME archivées', value: archivedPmes.length }] : []),
-  ]
-
   useEffect(() => {
     if (tab !== 'dash' || !canReadActivities || !dashboardBuckets.length) return
     let active = true
@@ -618,8 +627,6 @@ export default function App() {
     (!fIncomplete || r.isIncomplete || documentStats(r.id).missing > 0))
 
   const count = (f) => rows.filter(f).length
-  const statutsDates = ['Valide', 'Expiré', 'À renouveler', 'Non renseigné', 'À vérifier']
-  const totalStatutsAut = statutsDates.reduce((total, statut) => total + count(r => r.sAut.label === statut), 0)
   const horsRegistre = count(r => !normalize(r.source).toLowerCase().includes('registre'))
   const registreSansEcheance = count(r => normalize(r.source).toLowerCase().includes('registre') && !r.expAut)
   const savePme = async (p) => {
@@ -817,6 +824,53 @@ export default function App() {
   const goDossier = status => { setFDossierStatus(status); setFAuthorizationStatus(''); setFStatAut(''); setFStatMin(''); setQ(''); setFType(''); setFCommune(''); setFYear(''); setFTransaction(''); setFRenewal(''); setFIncomplete(false); setTab('pme') }
   const goAuthorization = status => { setFAuthorizationStatus(status); setFDossierStatus(''); setFStatAut(''); setFStatMin(''); setQ(''); setFType(''); setFCommune(''); setFYear(''); setFTransaction(''); setFRenewal(''); setFIncomplete(false); setTab('pme') }
 
+  const dossierDashboardCards = [
+    { label: 'PME suivies', value: rows.length, onClick: () => goDossier('') },
+    ...DOSSIER_STATUSES.map(status => ({
+      label: DOSSIER_LABELS[status],
+      value: count(row => row.dossierStatus === status),
+      onClick: () => goDossier(status),
+    })),
+  ]
+  const documentDashboardCards = [
+    { label: 'Documents demandés', value: documents.filter(doc => doc.required).length, onClick: showIncomplete },
+    { label: 'Documents reçus', value: documents.filter(doc => Boolean(doc.path)).length, onClick: showIncomplete },
+    { label: 'Documents validés', value: documents.filter(doc => doc.status === 'VALIDE').length, onClick: showIncomplete },
+    { label: 'Manquants ou rejetés', value: documents.filter(doc => doc.required && ['MANQUANT', 'REJETE'].includes(doc.status)).length, onClick: showIncomplete },
+    { label: 'En attente de vérification', value: documents.filter(doc => doc.status === 'EN_ATTENTE_DE_VERIFICATION').length, onClick: showIncomplete },
+  ]
+  const authorizationDashboardCards = AUTH_STATUSES.map(status => ({
+    label: AUTH_LABELS[status],
+    value: count(row => authTag(row.authorizationStatus, row.authorizationExpiryDate).label === AUTH_LABELS[status]),
+    onClick: () => goAuthorization(status),
+  }))
+  const historicalAuthorizationCards = [
+    { label: 'Dossiers PME suivis', value: rows.length, onClick: () => go('') },
+    ...['Valide', 'Expiré', 'À renouveler', 'Non renseigné', 'À vérifier'].map(status => ({
+      label: status === 'Valide' ? 'Autorisations en cours' : status === 'Non renseigné' ? "Dates d'expiration non renseignées" : status === 'À vérifier' ? 'Dates REGEDEK à vérifier' : `Autorisations ${status.toLowerCase()}`,
+      value: count(row => row.sAut.label === status),
+      onClick: () => go(status),
+    })),
+  ]
+  const ministerialDashboardCards = ['Valide', 'Expiré', 'À renouveler', 'Non renseigné', 'À vérifier'].map(status => ({
+    label: status === 'Valide' ? 'Agréments valides' : status === 'Non renseigné' ? "Dates d'agrément non renseignées" : status === 'À vérifier' ? "Dates d'agrément à vérifier" : `Agréments ${status.toLowerCase()}`,
+    value: count(row => row.sAgr.label === status),
+    onClick: () => go(status, 'fStatMin'),
+  }))
+  const qualityDashboardCards = [{
+    label: 'Dossiers incomplets ou dates à vérifier',
+    value: count(row => row.isIncomplete || row.sAut.label === 'À vérifier' || row.sAgr.label === 'À vérifier'),
+    onClick: showIncomplete,
+  }]
+  const purchaseDashboardCards = [
+    { label: 'Achats enregistrés', value: achats.length },
+    ...dashboardPurchaseTotals.map(total => ({
+      label: `Montant saisi — ${total.currency}`,
+      value: `${total.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${total.currency}`,
+    })),
+  ]
+  const activityDashboardCards = dashboardActivityByStaff.map(item => ({ label: item.label, value: item.value }))
+
   return (<>
     <header className="app-header">
       <Brand compact />
@@ -834,85 +888,71 @@ export default function App() {
       {notice && <p role="alert" className="notice">{notice}</p>}
       {activityNotification && <p className="activity-notification" role="status">{activityNotification}<button className="btn sec" onClick={() => setActivityNotification('')}>Fermer</button></p>}
       {tab === 'dash' && <>
-        <h2>Suivi administratif des dossiers PME</h2>
-        <div className="cards">
-          <div className="card" onClick={() => goDossier('')}><b>{rows.length}</b><span>PME suivies</span></div>
-          {DOSSIER_STATUSES.map(status => <div className="card" key={status} onClick={() => goDossier(status)}><b>{count(r => r.dossierStatus === status)}</b><span>{DOSSIER_LABELS[status]}</span></div>)}
+        <div className="dashboard-period-toolbar">
+          <p>Statistiques réelles du registre; les achats se mettent à jour automatiquement.</p>
+          <label className="period-filter">Regrouper les évolutions par
+            <select value={dashboardPeriod} onChange={event => setDashboardPeriod(event.target.value)}>
+              <option value="day">Jour — 14 derniers jours</option>
+              <option value="month">Mois — 12 derniers mois</option>
+              <option value="year">Année — 5 dernières années</option>
+            </select>
+          </label>
         </div>
-        <p className="metric-note">Répartition des dossiers : {DOSSIER_STATUSES.reduce((sum, status) => sum + count(r => r.dossierStatus === status), 0)} / {rows.length}. La complétude du dossier n’accorde jamais automatiquement une autorisation REGEDEK.</p>
-        <h2>Documents administratifs</h2>
-        <div className="cards">
-          <div className="card" onClick={showIncomplete}><b>{documents.filter(d => d.required).length}</b><span>Documents demandés</span></div>
-          <div className="card" onClick={showIncomplete}><b>{documents.filter(d => Boolean(d.path)).length}</b><span>Documents reçus</span></div>
-          <div className="card" onClick={showIncomplete}><b>{documents.filter(d => d.status === 'VALIDE').length}</b><span>Documents validés</span></div>
-          <div className="card" onClick={showIncomplete}><b>{documents.filter(d => d.required && ['MANQUANT', 'REJETE'].includes(d.status)).length}</b><span>Documents manquants ou rejetés</span></div>
-          <div className="card" onClick={showIncomplete}><b>{documents.filter(d => d.status === 'EN_ATTENTE_DE_VERIFICATION').length}</b><span>Documents en attente de vérification</span></div>
-        </div>
-        <h2>Situation réglementaire REGEDEK</h2>
-        <div className="cards">
-          {AUTH_STATUSES.map(status => <div className="card" key={status} onClick={() => goAuthorization(status)}><b>{count(r => authTag(r.authorizationStatus, r.authorizationExpiryDate).label === AUTH_LABELS[status])}</b><span>{AUTH_LABELS[status]}</span></div>)}
-        </div>
-        <p className="metric-note">Répartition réglementaire : {AUTH_STATUSES.reduce((sum, status) => sum + count(r => authTag(r.authorizationStatus, r.authorizationExpiryDate).label === AUTH_LABELS[status]), 0)} / {rows.length}. L’autorisation est attribuée uniquement après décision enregistrée par un utilisateur habilité.</p>
-        <h2>Anciennes échéances REGEDEK et agréments ministériels</h2>
-        <div className="cards">
-          <div className="card" onClick={() => go('')}><b>{rows.length}</b><span>Dossiers PME suivis</span></div>
-          <div className="card" onClick={() => go('Valide')}><b>{count(r => r.sAut.label === 'Valide')}</b><span>Autorisations en cours</span></div>
-          <div className="card" onClick={() => go('Expiré')}><b>{count(r => r.sAut.label === 'Expiré')}</b><span>Autorisations expirées</span></div>
-          <div className="card" onClick={() => go('À renouveler')}><b>{count(r => r.sAut.label === 'À renouveler')}</b><span>Autorisations à renouveler</span></div>
-          <div className="card" onClick={() => go('Non renseigné')}><b>{count(r => r.sAut.label === 'Non renseigné')}</b><span>Dates d'expiration non renseignées</span></div>
-          <div className="card" onClick={() => go('À vérifier')}><b>{count(r => r.sAut.label === 'À vérifier')}</b><span>Dates REGEDEK à vérifier</span></div>
-        </div>
-        <p className="metric-note">Répartition REGEDEK : {totalStatutsAut} / {rows.length} dossiers. Parmi les dossiers sans échéance, {horsRegistre} proviennent uniquement d'achats ou d'enquêtes et {registreSansEcheance} sont de source registre sans date d'expiration.</p>
-        <h2>Agréments ministériels</h2>
-        <div className="cards">
-          <div className="card" onClick={() => go('Valide', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Valide')}</b><span>Agréments valides</span></div>
-          <div className="card" onClick={() => go('Expiré', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Expiré')}</b><span>Agréments expirés</span></div>
-          <div className="card" onClick={() => go('À renouveler', 'fStatMin')}><b>{count(r => r.sAgr.label === 'À renouveler')}</b><span>Agréments à renouveler</span></div>
-          <div className="card" onClick={() => go('Non renseigné', 'fStatMin')}><b>{count(r => r.sAgr.label === 'Non renseigné')}</b><span>Dates d'agrément non renseignées</span></div>
-          <div className="card" onClick={() => go('À vérifier', 'fStatMin')}><b>{count(r => r.sAgr.label === 'À vérifier')}</b><span>Dates d'agrément à vérifier</span></div>
-        </div>
-        <h2>Qualité des dossiers</h2>
-        <div className="cards">
-          <div className="card" onClick={showIncomplete}><b>{count(r => r.isIncomplete || r.sAut.label === 'À vérifier' || r.sAgr.label === 'À vérifier')}</b><span>Dossiers incomplets ou dates à vérifier</span></div>
-        </div>
-        <section className="dashboard-visualizations">
-          <div className="dashboard-section-heading">
-            <div>
-              <h2>Graphiques du tableau de bord</h2>
-              <p>Données réelles Supabase; les PME et achats s’actualisent automatiquement chaque minute et au retour sur la page.</p>
-            </div>
-            <label className="period-filter">Regrouper par
-              <select value={dashboardPeriod} onChange={event => setDashboardPeriod(event.target.value)}>
-                <option value="day">Jour — 14 derniers jours</option>
-                <option value="month">Mois — 12 derniers mois</option>
-                <option value="year">Année — 5 dernières années</option>
-              </select>
-            </label>
-          </div>
-          <div className="dashboard-kpis">
-            <div><span>PME enregistrées visibles</span><strong>{dashboardPmes.length.toLocaleString('fr-FR')}</strong></div>
-            <div><span>Autorisations en cours</span><strong>{dashboardAuthorizationBars[1].value.toLocaleString('fr-FR')}</strong></div>
-            <div><span>En attente de décision</span><strong>{dashboardAuthorizationBars[2].value.toLocaleString('fr-FR')}</strong></div>
-            <div><span>Achats enregistrés</span><strong>{achats.length.toLocaleString('fr-FR')}</strong></div>
-            {dashboardPurchaseTotals.map(total => <div key={total.currency}><span>Montant saisi — {total.currency}</span><strong>{total.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {total.currency}</strong></div>)}
-          </div>
-          <h3 className="dashboard-subtitle">Évolution des enregistrements</h3>
-          <div className="dashboard-charts">
-            <TrendBarChart title="PME enregistrées" data={dashboardPmeTrend} />
-            <TrendBarChart title="Achats enregistrés" data={dashboardPurchaseTrend} />
-          </div>
-          <h3 className="dashboard-subtitle">Situation et activité</h3>
-          <div className="dashboard-charts">
-            <HorizontalBarChart title="PME et autorisations" data={dashboardAuthorizationBars} note="Les PME archivées, si elles sont visibles pour ton rôle, sont indiquées séparément." />
+        <DashboardStatSection
+          title="Suivi administratif des dossiers PME"
+          cards={dossierDashboardCards}
+          note={`Répartition : ${DOSSIER_STATUSES.reduce((sum, status) => sum + count(row => row.dossierStatus === status), 0)} / ${rows.length}. La complétude du dossier n’accorde jamais automatiquement une autorisation REGEDEK.`}
+          chart={<div className="dashboard-chart-stack">
+            <HorizontalBarChart title="Répartition par statut du dossier" data={dossierDashboardCards.slice(1).map(card => ({ label: card.label, value: card.value }))} />
+            <TrendBarChart title="Évolution des enregistrements PME" data={dashboardPmeTrend} />
+          </div>}
+        />
+        <DashboardStatSection
+          title="Documents administratifs"
+          cards={documentDashboardCards}
+          chart={<HorizontalBarChart title="Répartition des documents" data={documentDashboardCards.map(card => ({ label: card.label, value: card.value }))} />}
+        />
+        <DashboardStatSection
+          title="Situation réglementaire REGEDEK"
+          cards={authorizationDashboardCards}
+          note={`Répartition : ${AUTH_STATUSES.reduce((sum, status) => sum + count(row => authTag(row.authorizationStatus, row.authorizationExpiryDate).label === AUTH_LABELS[status]), 0)} / ${rows.length}. L’autorisation n’est attribuée qu’après une décision enregistrée par un utilisateur habilité.`}
+          chart={<HorizontalBarChart title="PME par décision réglementaire" data={authorizationDashboardCards.map(card => ({ label: card.label, value: card.value }))} />}
+        />
+        <DashboardStatSection
+          title="Anciennes échéances REGEDEK et agréments ministériels"
+          cards={historicalAuthorizationCards}
+          note={`Parmi les dossiers sans échéance, ${horsRegistre} proviennent uniquement d’achats ou d’enquêtes et ${registreSansEcheance} sont de source registre sans date d’expiration.`}
+          chart={<HorizontalBarChart title="Échéances REGEDEK historiques" data={historicalAuthorizationCards.slice(1).map(card => ({ label: card.label, value: card.value }))} />}
+        />
+        <DashboardStatSection
+          title="Agréments ministériels"
+          cards={ministerialDashboardCards}
+          chart={<HorizontalBarChart title="Statut des agréments ministériels" data={ministerialDashboardCards.map(card => ({ label: card.label, value: card.value }))} />}
+        />
+        <DashboardStatSection
+          title="Qualité des dossiers"
+          cards={qualityDashboardCards}
+          chart={<HorizontalBarChart title="Dossiers à vérifier" data={qualityDashboardCards.map(card => ({ label: card.label, value: card.value }))} />}
+        />
+        <DashboardStatSection
+          title="Achats"
+          cards={purchaseDashboardCards}
+          chart={<div className="dashboard-chart-stack">
+            <TrendBarChart title="Évolution du nombre d’achats" data={dashboardPurchaseTrend} />
             {dashboardAmountTrends.length
-              ? dashboardAmountTrends.map(series => <TrendBarChart key={series.currency} title={`Montant des achats — ${series.currency}`} data={series.data} format={value => value.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} note={`Montants renseignés en ${series.currency}; les devises ne sont pas additionnées.`} />)
-              : <section className="dashboard-chart"><h3>Montant des achats</h3><p className="chart-empty">Aucun montant d’achat n’a encore été saisi. Les quantités seules ne permettent pas d’estimer un montant.</p></section>}
-            {canReadActivities && <>
-              <HorizontalBarChart title="Activités par administrateur" data={dashboardActivityByStaff} note={dashboardActivityBusy ? 'Actualisation des activités…' : `Activités sur la période (${dashboardActivities.length.toLocaleString('fr-FR')} événements chargés).`} />
-              <TrendBarChart title="Évolution des activités" data={dashboardActivityTrend} />
-            </>}
-          </div>
-        </section>
+              ? dashboardAmountTrends.map(series => <TrendBarChart key={series.currency} title={`Évolution des montants — ${series.currency}`} data={series.data} format={value => value.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} note="Les devises ne sont pas additionnées." />)
+              : <section className="dashboard-chart"><h3>Montants d’achats</h3><p className="chart-empty">Aucun prix saisi; aucun montant n’est estimé à partir des quantités.</p></section>}
+          </div>}
+        />
+        {canReadActivities && <DashboardStatSection
+          title="Activités des administrateurs"
+          cards={activityDashboardCards}
+          note={dashboardActivityBusy ? 'Actualisation des activités…' : `${dashboardActivities.length.toLocaleString('fr-FR')} activités chargées pour la période choisie.`}
+          chart={<div className="dashboard-chart-stack">
+            <HorizontalBarChart title="Activités par administrateur" data={dashboardActivityByStaff} />
+            <TrendBarChart title="Évolution des activités" data={dashboardActivityTrend} />
+          </div>}
+        />}
         <h2>À surveiller</h2>
         <Table
           rows={rows.filter(r => r.authorizationStatus !== 'AUTORISE' || r.dossierStatus !== 'VALIDE_ADMINISTRATIVEMENT' || documentStats(r.id).missing > 0 || r.sAut.label !== 'Valide' || r.sAgr.label !== 'Valide' || r.isIncomplete || r.sAct.label !== 'Active')}
