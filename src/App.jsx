@@ -109,6 +109,8 @@ const fetchAll = async (table, orderColumn, ascending = true) => {
   } while (offset < total)
   return all
 }
+const isMissingSchemaTable = (error, table) => error?.code === 'PGRST205'
+  && String(error.message || '').includes(`public.${table}`)
 
 const dateKeyInKinshasa = value => {
   if (!value) return ''
@@ -222,6 +224,7 @@ export default function App() {
   const [archivedPmes, setArchivedPmes] = useState([])
   const [achats, setAchats] = useState([])
   const [moratoria, setMoratoria] = useState([])
+  const [moratoriaAvailable, setMoratoriaAvailable] = useState(true)
   const [documents, setDocuments] = useState([])
   const [inspections, setInspections] = useState([])
   const [dossierHistory, setDossierHistory] = useState([])
@@ -311,7 +314,7 @@ export default function App() {
   useEffect(() => {
     if (!supabase || session === undefined) return
     let cancelled = false
-    setDataReady(false); setRole(null); setAccessError(''); setNotice(''); setMoratoria([])
+    setDataReady(false); setRole(null); setAccessError(''); setNotice(''); setMoratoria([]); setMoratoriaAvailable(true)
     const load = async () => {
       if (!session) {
         setRole(null); setPermissions([]); setPmes([]); setArchivedPmes([]); setAchats([]); setDataReady(true)
@@ -349,7 +352,7 @@ export default function App() {
         return
       }
 
-      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows, moratoriumRows] = await Promise.all([
+      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
         supabase.from('settings').select('alerte, inactif').eq('id', true).single(),
@@ -357,9 +360,15 @@ export default function App() {
         fetchAll('pme_dossier_history', 'created_at', false),
         fetchAll('pme_authorization_history', 'created_at', false),
         fetchAll('pme_inspection_reports', 'inspection_date', false),
-        fetchAll('pme_moratoria', 'created_at', false),
       ])
       if (settingsResult.error) throw settingsResult.error
+      let moratoriumRows = []
+      try {
+        moratoriumRows = await fetchAll('pme_moratoria', 'created_at', false)
+      } catch (error) {
+        if (!isMissingSchemaTable(error, 'pme_moratoria')) throw error
+        setMoratoriaAvailable(false)
+      }
       if (cancelled) return
       const allPmes = pmeRows.map(toPme)
       setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
@@ -513,11 +522,13 @@ export default function App() {
       }
     }
     const refreshMoratoria = async () => {
+      if (!moratoriaAvailable) return
       try {
         const rows = sortMoratoriaLatestFirst((await fetchAll('pme_moratoria', 'created_at', false)).map(toMoratorium))
         if (active) setMoratoria(rows)
       } catch (error) {
-        if (active) reportError(error)
+        if (active && isMissingSchemaTable(error, 'pme_moratoria')) setMoratoriaAvailable(false)
+        else if (active) reportError(error)
       }
     }
     const refresh = () => {
@@ -536,7 +547,7 @@ export default function App() {
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [tab, session?.user?.id, role])
+  }, [tab, session?.user?.id, role, moratoriaAvailable])
 
   useEffect(() => {
     if (tab !== 'activity' || !canReadActivities) return
@@ -895,7 +906,7 @@ export default function App() {
     setNotice(`Achat ${status === 'VALIDE' ? 'validé' : status === 'ANNULE' ? 'annulé' : 'remis en attente'}.`)
   }
   const saveMoratorium = async form => {
-    if (!canManageMoratoria || moratoriumSubmissionLock.current) return
+    if (!canManageMoratoria || !moratoriaAvailable || moratoriumSubmissionLock.current) return
     moratoriumSubmissionLock.current = true
     setMoratoriumBusy(true)
     let uploadedPath = ''
@@ -1238,11 +1249,12 @@ export default function App() {
         <div className="row summary-heading">
           <div><h2>TABLEAU RÉCAPITULATIF DES PME</h2><p>Échéances calculées au {fmt(moratoriumToday)} · achats de sacs validés en {summaryYear} (année de Kinshasa).</p></div>
           <div className="row summary-actions">
-            <button className="btn sec" onClick={exportSummaryPdf}>Exporter PDF</button>
-            <button className="btn sec" onClick={exportSummaryExcel}>Exporter Excel</button>
-            {canManageMoratoria && <button className="btn" disabled={!pmes.length} onClick={() => { setMoratoriumNotice(''); setMoratoriumFormOpen(true) }}>Attribuer un moratoire</button>}
+            <button className="btn sec" disabled={!moratoriaAvailable} onClick={exportSummaryPdf}>Exporter PDF</button>
+            <button className="btn sec" disabled={!moratoriaAvailable} onClick={exportSummaryExcel}>Exporter Excel</button>
+            {canManageMoratoria && <button className="btn" disabled={!pmes.length || !moratoriaAvailable} onClick={() => { setMoratoriumNotice(''); setMoratoriumFormOpen(true) }}>Attribuer un moratoire</button>}
           </div>
         </div>
+        {!moratoriaAvailable && <p role="alert" className="notice">Le tableau des moratoires n’est pas encore activé sur ce projet Supabase. Dans le projet <strong>{supabaseProjectHost}</strong>, applique le script SQL <strong>supabase/migrations/20261118100000_pme_moratoria_and_purchase_validation.sql</strong>, puis recharge l’application. Les autres rubriques restent disponibles; l’attribution de moratoires et les exports récapitulatifs sont désactivés jusqu’à l’application du script.</p>}
         {moratoriumNotice && <p role="status" className="notice">{moratoriumNotice}</p>}
         <div className="bar filters summary-filters">
           <input aria-label="Rechercher une PME" placeholder="Rechercher par nom de PME" value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} />
@@ -1250,13 +1262,13 @@ export default function App() {
             <option value="">Tous les statuts d’autorisation</option>
             <option value="AUTORISE">Autorisée</option><option value="EN_ATTENTE">En attente</option><option value="EXPIRE">Expirée</option><option value="NON_CONFORME">Non autorisée</option>
           </select>
-          <select aria-label="Filtrer par statut du moratoire" value={summaryMoratoriumFilter} onChange={event => setSummaryMoratoriumFilter(event.target.value)}>
+          <select aria-label="Filtrer par statut du moratoire" value={summaryMoratoriumFilter} disabled={!moratoriaAvailable} onChange={event => setSummaryMoratoriumFilter(event.target.value)}>
             <option value="">Tous les statuts du moratoire</option>
             {Object.entries(MORATORIUM_STATUS_LABELS).map(([code, label]) => <option key={code} value={code}>{label}</option>)}
           </select>
           <select aria-label="Trier le tableau" value={`${summarySort}:${summarySortDirection}`} onChange={event => { const [key, direction] = event.target.value.split(':'); setSummarySort(key); setSummarySortDirection(direction) }}>
             <option value="name:asc">Trier par nom (A–Z)</option><option value="name:desc">Trier par nom (Z–A)</option>
-            <option value="expiry:asc">Expiration du moratoire (plus proche)</option><option value="expiry:desc">Expiration du moratoire (plus éloignée)</option>
+            <option value="expiry:asc" disabled={!moratoriaAvailable}>Expiration du moratoire (plus proche)</option><option value="expiry:desc" disabled={!moratoriaAvailable}>Expiration du moratoire (plus éloignée)</option>
             <option value="bags:desc">Achats de sacs (plus nombreux)</option><option value="bags:asc">Achats de sacs (moins nombreux)</option>
           </select>
         </div>
@@ -1265,8 +1277,8 @@ export default function App() {
           <tbody>{filteredSummaryRows.map(row => <tr key={row.pme.id}>
             <td><button className="summary-company-link" onClick={() => setDetail(row.pme)}>{row.pme.nom}</button></td>
             <td><Tag s={{ label: ({ AUTORISE: 'Autorisée', EN_ATTENTE: 'En attente', EXPIRE: 'Expirée', NON_CONFORME: 'Non autorisée' })[row.authorizationStatus], cls: ({ AUTORISE: 'vert', EN_ATTENTE: 'orange', EXPIRE: 'rouge', NON_CONFORME: 'rouge' })[row.authorizationStatus] }} /></td>
-            <td><Tag s={{ label: MORATORIUM_STATUS_LABELS[row.moratoriumStatus.code], cls: MORATORIUM_STATUS_COLORS[row.moratoriumStatus.code] }} />{row.moratorium && <small className="summary-date">Du {fmt(row.moratorium.startsOn)} au {fmt(row.moratorium.expiresOn)}</small>}</td>
-            <td>{!row.moratorium ? '—' : row.moratoriumStatus.daysRemaining < 0 ? `Expiré depuis ${Math.abs(row.moratoriumStatus.daysRemaining)} j` : row.moratoriumStatus.code === 'upcoming' ? `Débute dans ${row.moratoriumStatus.daysUntilStart} j` : `${row.moratoriumStatus.daysRemaining} j`}</td>
+            <td>{moratoriaAvailable ? <><Tag s={{ label: MORATORIUM_STATUS_LABELS[row.moratoriumStatus.code], cls: MORATORIUM_STATUS_COLORS[row.moratoriumStatus.code] }} />{row.moratorium && <small className="summary-date">Du {fmt(row.moratorium.startsOn)} au {fmt(row.moratorium.expiresOn)}</small>}</> : 'Indisponible'}</td>
+            <td>{!moratoriaAvailable ? '—' : !row.moratorium ? '—' : row.moratoriumStatus.daysRemaining < 0 ? `Expiré depuis ${Math.abs(row.moratoriumStatus.daysRemaining)} j` : row.moratoriumStatus.code === 'upcoming' ? `Débute dans ${row.moratoriumStatus.daysUntilStart} j` : `${row.moratoriumStatus.daysRemaining} j`}</td>
             <td>{row.trashBagQuantity.toLocaleString('fr-FR')}</td>
             <td><div className="row summary-row-actions">
               {row.moratorium && <button className="btn sec" onClick={() => setMoratoriumHistoryPme(row.pme)}>Historique</button>}
