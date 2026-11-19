@@ -526,7 +526,7 @@ export default function App() {
     }
     load().catch(error => { if (!cancelled) { setAccessError(error.message); setDataReady(true) } })
     return () => { cancelled = true }
-  }, [session])
+  }, [session?.user?.id, session === null])
 
   const signIn = async ({ email, password }) => {
     setAuthBusy(true); setAuthNotice('')
