@@ -29,6 +29,155 @@ const ACTIVITY_LABELS = {
   'staff.permission.updated': 'Permission personnalisée modifiée', 'settings.updated': 'Paramètres modifiés',
   'moratorium.created': 'Moratoire accordé', 'purchase.status.updated': 'Statut d’achat modifié',
 }
+const ACTIVITY_FIELD_LABELS = {
+  nom: 'nom de l’entreprise',
+  type: 'catégorie',
+  num_aut: 'numéro d’autorisation historique',
+  date_aut: 'date d’autorisation historique',
+  exp_aut: 'expiration d’autorisation historique',
+  date_agr: 'date d’agrément ministériel',
+  exp_agr: 'expiration d’agrément ministériel',
+  contact: 'personne à contacter',
+  fonction: 'fonction du contact',
+  tel: 'numéro de téléphone',
+  email: 'adresse e-mail de contact',
+  adresse: 'adresse',
+  communes: 'communes desservies',
+  quartiers: 'quartiers desservis',
+  statut_juridique: 'statut juridique',
+  nb_autorisations: 'nombre d’autorisations',
+  note: 'remarque',
+  dossier_status: 'statut du dossier',
+  dossier_observations: 'observations du dossier',
+  authorization_status: 'statut de l’autorisation',
+  authorization_reference: 'référence de l’autorisation',
+  authorization_issue_date: 'date de délivrance',
+  authorization_expiry_date: 'date d’expiration',
+  authorization_observations: 'observations de l’autorisation',
+  non_compliance_reason: 'motif de non-conformité',
+  authorization_change_reason: 'motif de décision',
+  authority_signer_name: 'nom du signataire',
+  authority_signer_title: 'fonction du signataire',
+  designation: 'désignation',
+  qte: 'quantité',
+  unite: 'unité',
+  prix_unitaire: 'prix unitaire',
+  devise: 'devise',
+  document_name: 'nom du document',
+  is_required: 'caractère obligatoire du document',
+  status: 'statut',
+  observations: 'observations',
+  rejection_reason: 'motif de rejet',
+  result: 'résultat de l’inspection',
+  inspection_date: 'date de l’inspection',
+}
+const activitySnapshots = activity => ({
+  before: activity.details?.before && typeof activity.details.before === 'object' ? activity.details.before : null,
+  after: activity.details?.after && typeof activity.details.after === 'object'
+    ? activity.details.after
+    : activity.details && !activity.details.before && !activity.details.after
+      ? activity.details
+      : null,
+})
+const changedActivityFields = (activity, extraFields = []) => {
+  const { before, after } = activitySnapshots(activity)
+  const fields = new Set(extraFields)
+  if (before && after) {
+    for (const key of Object.keys(ACTIVITY_FIELD_LABELS)) {
+      if (JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null)) fields.add(key)
+    }
+  }
+  if (activity.operation === 'pme.dossier.updated' && activity.details?.old_status !== activity.details?.new_status) fields.add('dossier_status')
+  if (activity.operation === 'pme.dossier.updated' && activity.details?.observations != null) fields.add('dossier_observations')
+  if (activity.operation === 'purchase.status.updated') fields.add('status')
+  return [...fields].map(field => field === 'status' && activity.operation === 'purchase.status.updated'
+    ? 'statut de validation'
+    : ACTIVITY_FIELD_LABELS[field]).filter(Boolean)
+}
+const getActivityContext = (activity, pmes = [], achats = []) => {
+  const { before, after } = activitySnapshots(activity)
+  const pmeId = activity.pme_id
+    ?? after?.pme_id
+    ?? before?.pme_id
+    ?? (activity.entity_type === 'pme' ? activity.entity_id : null)
+  const pme = pmes.find(item => String(item.id) === String(pmeId))
+  const pmeName = pme?.nom || after?.nom || before?.nom || 'la PME'
+  const purchase = activity.purchase_id
+    ? achats.find(item => String(item.id) === String(activity.purchase_id))
+    : null
+  const itemName = after?.document_name || before?.document_name || after?.name || before?.name
+    || purchase?.designation || ''
+  const pmeSubject = pme?.nom || after?.nom || before?.nom || (pmeId ? 'la PME' : '')
+  const subject = activity.entity_type === 'document' && itemName
+    ? `${itemName}${pmeSubject ? ` — ${pmeSubject}` : ''}`
+    : pmeSubject
+      || (activity.entity_type === 'staff'
+        ? `Compte ${activity.entity_id || 'utilisateur'}`
+        : '')
+      || (activity.entity_type === 'settings' ? 'Paramètres de l’application' : '')
+      || (activity.entity_type === 'purchase' ? 'Achat' : '')
+      || ACTIVITY_LABELS[activity.operation]
+      || 'Élément concerné'
+  return { before, after, pme, pmeName: pmeSubject || 'la PME', itemName, subject }
+}
+const getActivityChanges = activity => {
+  if (activity.operation === 'purchase.status.updated') return ''
+  const changed = changedActivityFields(activity)
+  return changed.length ? `Champs concernés : ${changed.join(', ')}.` : ''
+}
+const getActivityActionLabel = activity => activity.operation === 'purchase.status.updated'
+  ? activity.details?.new_status === 'VALIDE'
+    ? 'Achat validé'
+    : activity.details?.new_status === 'ANNULE'
+      ? 'Achat annulé'
+      : 'Achat remis en attente'
+  : activity.operation === 'authorization.updated'
+    ? (() => {
+      const { before, after } = activitySnapshots(activity)
+      return after?.authorization_status === 'AUTORISE' && before?.authorization_status !== 'AUTORISE'
+        ? 'Autorisation accordée'
+        : 'Autorisation ou agrément modifié'
+    })()
+    : ACTIVITY_LABELS[activity.operation] || activity.operation
+const getActivitySummary = (activity, pmes = [], achats = []) => {
+  const actor = activity.actor_name || 'Un administrateur'
+  const { before, after, pmeName, itemName } = getActivityContext(activity, pmes, achats)
+  const changedText = getActivityChanges(activity)
+  const withChanges = changedText ? ` ${changedText}` : ''
+  const prefix = `L’administrateur ${actor}`
+  switch (activity.operation) {
+    case 'pme.created': return `${prefix} a ajouté la PME ${pmeName}.`
+    case 'pme.updated': return `${prefix} a modifié les informations de ${pmeName}.${withChanges}`
+    case 'pme.archived': return `${prefix} a archivé la PME ${pmeName}.`
+    case 'pme.restored': return `${prefix} a restauré la PME ${pmeName}.`
+    case 'pme.dossier.updated': return `${prefix} a modifié le dossier administratif de ${pmeName}.${withChanges}`
+    case 'authorization.updated':
+      return after?.authorization_status === 'AUTORISE' && before?.authorization_status !== 'AUTORISE'
+        ? `${prefix} a accordé une autorisation à ${pmeName}.${withChanges}`
+        : `${prefix} a modifié l’autorisation de ${pmeName}.${withChanges}`
+    case 'purchase.created': return `${prefix} a enregistré un achat${pme ? ` pour ${pmeName}` : ''}.`
+    case 'purchase.updated': return `${prefix} a modifié l’achat${pme ? ` de ${pmeName}` : ''}.${withChanges}`
+    case 'purchase.status.updated': {
+      const verb = activity.details?.new_status === 'VALIDE'
+        ? 'a validé un achat'
+        : activity.details?.new_status === 'ANNULE'
+          ? 'a annulé un achat'
+          : 'a remis un achat en attente'
+      return `${prefix} ${verb}${pme ? ` pour ${pmeName}` : ''}.`
+    }
+    case 'purchase.deleted': return `${prefix} a supprimé un achat${pme ? ` de ${pmeName}` : ''}.`
+    case 'moratorium.created': return `${prefix} a accordé un moratoire à ${pmeName}.`
+    case 'document.created': return `${prefix} a ajouté le document « ${itemName || 'document administratif'} » pour ${pmeName}.`
+    case 'document.updated': return `${prefix} a modifié le document « ${itemName || 'document administratif'} » de ${pmeName}.${withChanges}`
+    case 'document.deleted': return `${prefix} a supprimé un document administratif de ${pmeName}.`
+    case 'inspection.created': return `${prefix} a enregistré une inspection pour ${pmeName}.${withChanges}`
+    case 'staff.invited': return `${prefix} a invité un nouvel administrateur.`
+    case 'staff.role.updated': return `${prefix} a modifié le rôle d’un administrateur.`
+    case 'staff.permission.updated': return `${prefix} a modifié les permissions d’un administrateur.`
+    case 'settings.updated': return `${prefix} a modifié les paramètres de l’application.`
+    default: return `${prefix} a effectué l’opération « ${ACTIVITY_LABELS[activity.operation] || 'mise à jour'} ».`
+  }
+}
 const dossierTag = status => ({ label: DOSSIER_LABELS[status] || 'Dossier non soumis', cls: DOSSIER_COLORS[status] || 'gris' })
 const todayKinshasa = () => {
   const parts = new Intl.DateTimeFormat('en', { timeZone: 'Africa/Kinshasa', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
@@ -270,6 +419,8 @@ export default function App() {
   const [activityBusy, setActivityBusy] = useState(false)
   const [activityNotification, setActivityNotification] = useState('')
   const [unreadActivityCount, setUnreadActivityCount] = useState(0)
+  const activityEntitiesRef = useRef({ pmes: [], achats: [] })
+  activityEntitiesRef.current = { pmes: [...pmes, ...archivedPmes], achats }
 
   useEffect(() => {
     if (!supabase) return
@@ -485,7 +636,11 @@ export default function App() {
         setDashboardActivities(current => [activity, ...current.filter(item => item.id !== activity.id)])
         if (activity.actor_id !== session?.user?.id) {
           if (tab !== 'activity') setUnreadActivityCount(current => current + 1)
-          setActivityNotification(`${activity.actor_name} a effectué l’opération « ${ACTIVITY_LABELS[activity.operation] || activity.operation} ».`)
+          setActivityNotification(getActivitySummary(
+            activity,
+            activityEntitiesRef.current.pmes,
+            activityEntitiesRef.current.achats,
+          ))
         }
       })
       .subscribe(status => {
@@ -1185,7 +1340,7 @@ export default function App() {
         />
         {canReadActivities && <section className="recent-activity">
           <div className="row"><h2>Activités récentes</h2><button className="btn sec" onClick={() => setTab('activity')}>Consulter le journal</button></div>
-          <ActivityEntries rows={recentActivities} />
+          <ActivityEntries rows={recentActivities} pmes={[...pmes, ...archivedPmes]} achats={achats} />
         </section>}
       </>}
 
@@ -1319,6 +1474,8 @@ export default function App() {
         busy={activityBusy}
         filters={activityFilters}
         onChange={setActivityFilters}
+        pmes={[...pmes, ...archivedPmes]}
+        achats={achats}
       />}
 
       {tab === 'reports' && canReadReports && <ReportCenter
@@ -1753,15 +1910,15 @@ function StaffManager({ users, busy, onRoleChange, onPermissionChange, onInvite 
   </section>
 }
 
-function ActivityEntries({ rows }) {
+function ActivityEntries({ rows, pmes, achats }) {
   if (!rows.length) return <p>Aucune activité récente enregistrée.</p>
   return <div className="activity-list">{rows.map(activity => <article className="activity-entry" key={activity.id}>
-    <div><strong>{ACTIVITY_LABELS[activity.operation] || activity.operation}</strong><span>{activity.actor_name} · {activity.actor_email} · {activity.actor_role}</span></div>
+    <div><strong>{getActivitySummary(activity, pmes, achats)}</strong></div>
     <time dateTime={activity.created_at}>{new Date(activity.created_at).toLocaleString('fr-FR')}</time>
   </article>)}</div>
 }
 
-function ActivityLog({ rows, busy, filters, onChange }) {
+function ActivityLog({ rows, busy, filters, onChange, pmes, achats }) {
   const setFilter = key => event => onChange(current => ({ ...current, [key]: event.target.value }))
   const clearFilters = () => onChange({ actor: '', operation: '', from: '', to: '' })
   return <section className="activity-log">
@@ -1777,19 +1934,21 @@ function ActivityLog({ rows, busy, filters, onChange }) {
       <label>Au <input type="date" value={filters.to} onChange={setFilter('to')} /></label>
       <button className="btn sec" onClick={clearFilters}>Effacer les filtres</button>
     </div>
-    {busy ? <p>Chargement du journal…</p> : rows.length ? <div className="activity-list">
-      {rows.map(activity => <article className="activity-entry activity-entry-detailed" key={activity.id}>
-        <div className="activity-entry-main">
-          <strong>{ACTIVITY_LABELS[activity.operation] || activity.operation}</strong>
-          <span>{activity.actor_name} · {activity.actor_email} · rôle : {activity.actor_role}</span>
-          <span>{activity.entity_type}{activity.pme_id ? ` · PME n° ${activity.pme_id}` : ''}{activity.purchase_id ? ` · achat n° ${activity.purchase_id}` : ''}</span>
-        </div>
-        <time dateTime={activity.created_at}>{new Date(activity.created_at).toLocaleString('fr-FR')}</time>
-        {activity.details && Object.keys(activity.details).length > 0 && <details>
-          <summary>Détails de l’opération</summary>
-          <pre>{JSON.stringify(activity.details, null, 2)}</pre>
-        </details>}
-      </article>)}
+    {busy ? <p>Chargement du journal…</p> : rows.length ? <div className="tw activity-table-wrap">
+      <table className="activity-table"><thead><tr>
+        <th>Administrateur</th><th>Activité réalisée</th><th>PME ou élément concerné</th><th>Date et heure</th>
+      </tr></thead><tbody>
+        {rows.map(activity => {
+          const context = getActivityContext(activity, pmes, achats)
+          const changeText = getActivityChanges(activity)
+          return <tr key={activity.id}>
+            <td>{activity.actor_name || 'Administrateur'}</td>
+            <td>{getActivityActionLabel(activity)}{changeText ? <small className="activity-change-label">{changeText}</small> : null}</td>
+            <td>{context.subject}</td>
+            <td><time dateTime={activity.created_at}>{new Date(activity.created_at).toLocaleString('fr-FR')}</time></td>
+          </tr>
+        })}
+      </tbody></table>
     </div> : <p>Aucune activité ne correspond aux filtres.</p>}
     {!busy && rows.length === 500 && <p className="metric-note">Les 500 opérations les plus récentes correspondant aux filtres sont affichées. Affine la période pour consulter les anciennes entrées.</p>}
   </section>
@@ -1984,8 +2143,10 @@ function ReportCenter({ pmes, achats, documents }) {
       statusCodes: [pme?.dossierStatus, pme?.authorizationStatus, activity.operation],
     })
   }).map(activity => {
-    const pme = pmeById.get(String(activity.pme_id || (activity.entity_type === 'pme' ? activity.entity_id : '')))
-    return [new Date(activity.created_at).toLocaleString('fr-FR'), activity.actor_name, activity.actor_email, activity.actor_role, ACTIVITY_LABELS[activity.operation] || activity.operation, pme?.nom || '', activity.entity_type, activity.entity_id, Object.keys(activity.details || {}).length ? JSON.stringify(activity.details) : '']
+    const context = getActivityContext(activity, pmes, achats)
+    const changeText = getActivityChanges(activity)
+    const action = `${getActivityActionLabel(activity)}${changeText ? ` — ${changeText}` : ''}`
+    return [new Date(activity.created_at).toLocaleString('fr-FR'), activity.actor_name, action, context.subject]
   })
   const sheetsByType = {
     pmes: [{ name: 'PME', headers: ['ID PME', 'Entreprise', 'Catégorie', 'Date d’enregistrement', 'Statut du dossier', 'Statut d’autorisation', 'Administrateur'], rows: pmeRows }],
@@ -1995,7 +2156,7 @@ function ReportCenter({ pmes, achats, documents }) {
       { name: 'PME', headers: ['ID PME', 'Entreprise', 'Catégorie', 'Date d’enregistrement', 'Statut du dossier', 'Statut d’autorisation', 'Administrateur'], rows: pmeRows },
       { name: 'Achats', headers: ['ID achat', 'Date', 'Entreprise', 'Produit / service', 'Quantité', 'Unité', 'Prix unitaire', 'Devise', 'Montant total', 'Administrateur'], rows: purchaseRows },
       { name: 'Autorisations', headers: ['ID PME', 'Entreprise', 'Nature / référence', 'Date d’obtention', 'Date d’expiration', 'Statut', 'Documents associés', 'Administrateur'], rows: authorizationRows },
-      { name: 'Activités', headers: ['Date et heure', 'Nom', 'E-mail', 'Rôle', 'Opération', 'Entreprise', 'Type d’entité', 'ID entité', 'Détails'], rows: activityRows },
+      { name: 'Activités', headers: ['Date et heure', 'Administrateur', 'Activité réalisée', 'PME ou élément concerné'], rows: activityRows },
     ],
   }
   const sheets = sheetsByType[filters.type]
@@ -2026,7 +2187,10 @@ function ReportCenter({ pmes, achats, documents }) {
     setExportNotice('La fenêtre d’impression est ouverte. Choisis « Enregistrer au format PDF » pour télécharger le rapport.')
   }
   const allStatuses = [...DOSSIER_STATUSES.map(status => [status, DOSSIER_LABELS[status]]), ...AUTH_STATUSES.map(status => [status, AUTH_LABELS[status]])]
-  const admins = [...new Set(lookupActivities.map(activity => activity.actor_email).filter(Boolean))].sort()
+  const admins = [...new Map(lookupActivities.filter(activity => activity.actor_email).map(activity => [
+    activity.actor_email.toLowerCase(),
+    { email: activity.actor_email, name: activity.actor_name || activity.actor_email },
+  ])).values()].sort((left, right) => left.name.localeCompare(right.name, 'fr', { sensitivity: 'base' }))
   return <section className="report-center">
     <h2>Rapports et téléchargements</h2>
     <p>Les montants des achats historiques restent vides tant qu’ils n’ont pas été saisis manuellement. Aucun montant n’est estimé à partir des quantités.</p>
@@ -2035,7 +2199,7 @@ function ReportCenter({ pmes, achats, documents }) {
       <label>Du <input type="date" value={filters.from} onChange={setFilter('from')} /></label>
       <label>Au <input type="date" value={filters.to} onChange={setFilter('to')} /></label>
       <select aria-label="Filtrer par entreprise" value={filters.company} onChange={setFilter('company')}><option value="">Toutes les entreprises</option>{pmes.map(pme => <option key={pme.id} value={pme.id}>{pme.nom}</option>)}</select>
-      <select aria-label="Filtrer par administrateur" value={filters.admin} onChange={setFilter('admin')}><option value="">Tous les administrateurs</option>{admins.map(admin => <option key={admin} value={admin}>{admin}</option>)}</select>
+      <select aria-label="Filtrer par administrateur" value={filters.admin} onChange={setFilter('admin')}><option value="">Tous les administrateurs</option>{admins.map(admin => <option key={admin.email} value={admin.email}>{admin.name}</option>)}</select>
       <select aria-label="Filtrer par statut" value={filters.status} onChange={setFilter('status')}><option value="">Tous les statuts</option>{allStatuses.map(([status, label]) => <option key={status} value={status}>{label}</option>)}</select>
     </div>
     {busy ? <p>Chargement des activités et des administrateurs…</p> : <>
