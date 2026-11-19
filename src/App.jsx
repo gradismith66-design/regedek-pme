@@ -141,7 +141,7 @@ const getActivityActionLabel = activity => activity.operation === 'purchase.stat
     : ACTIVITY_LABELS[activity.operation] || activity.operation
 const getActivitySummary = (activity, pmes = [], achats = []) => {
   const actor = activity.actor_name || 'Un administrateur'
-  const { before, after, pmeName, itemName } = getActivityContext(activity, pmes, achats)
+  const { before, after, pme, pmeName, itemName } = getActivityContext(activity, pmes, achats)
   const changedText = getActivityChanges(activity)
   const withChanges = changedText ? ` ${changedText}` : ''
   const prefix = `L’administrateur ${actor}`
