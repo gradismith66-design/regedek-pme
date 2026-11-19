@@ -2047,22 +2047,35 @@ function ReportCenter({ pmes, achats, documents }) {
   </section>
 }
 
+function PmeFormField({ name, label, type = 'text', full = false, value, onChange }) {
+  const id = `pme-form-${name}`
+  return <div className={full ? 'full' : ''}>
+    <label htmlFor={id}>{label}</label>
+    <input id={id} type={type} value={value ?? ''} onChange={onChange} />
+  </div>
+}
+
 function PmeForm({ p, onSave, onClose }) {
   const [f, setF] = useState(p)
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
-  const F = ({ k, l, t = 'text', full }) => <div className={full ? 'full' : ''}><label>{l}</label><input type={t} value={f[k]} onChange={set(k)} /></div>
+  const set = key => event => setF(current => ({ ...current, [key]: event.target.value }))
   return <div className="modal"><div className="box">
     <h2>{f.id ? 'Modifier la PME' : 'Nouvelle PME'}</h2>
     <div className="grid">
-      <F k="nom" l="Nom de la PME *" />
+      <PmeFormField name="nom" label="Nom de la PME *" value={f.nom} onChange={set('nom')} />
       <div><label>Type</label><select value={f.type} onChange={set('type')}><option>MENAGE</option><option>HORECA</option></select></div>
-      <F k="contact" l="Personne à contacter" /><F k="tel" l="Téléphone" />
-      <F k="email" l="E-mail" t="email" /><F k="adresse" l="Adresse physique" />
-      <F k="communes" l="Communes desservies" /><F k="quartiers" l="Quartiers" />
-      <F k="statutJuridique" l="Statut juridique" /><F k="note" l="Remarque" />
-      <F k="numAut" l="N° autorisation REGEDEK" full />
-      <F k="dateAut" l="Date autorisation REGEDEK" t="date" /><F k="expAut" l="Expiration autorisation" t="date" />
-      <F k="dateAgr" l="Date agrément ministère" t="date" /><F k="expAgr" l="Expiration agrément" t="date" />
+      <PmeFormField name="contact" label="Personne à contacter" value={f.contact} onChange={set('contact')} />
+      <PmeFormField name="tel" label="Téléphone" value={f.tel} onChange={set('tel')} />
+      <PmeFormField name="email" label="E-mail" type="email" value={f.email} onChange={set('email')} />
+      <PmeFormField name="adresse" label="Adresse physique" value={f.adresse} onChange={set('adresse')} />
+      <PmeFormField name="communes" label="Communes desservies" value={f.communes} onChange={set('communes')} />
+      <PmeFormField name="quartiers" label="Quartiers" value={f.quartiers} onChange={set('quartiers')} />
+      <PmeFormField name="statutJuridique" label="Statut juridique" value={f.statutJuridique} onChange={set('statutJuridique')} />
+      <PmeFormField name="note" label="Remarque" value={f.note} onChange={set('note')} />
+      <PmeFormField name="numAut" label="N° autorisation REGEDEK" full value={f.numAut} onChange={set('numAut')} />
+      <PmeFormField name="dateAut" label="Date autorisation REGEDEK" type="date" value={f.dateAut} onChange={set('dateAut')} />
+      <PmeFormField name="expAut" label="Expiration autorisation" type="date" value={f.expAut} onChange={set('expAut')} />
+      <PmeFormField name="dateAgr" label="Date agrément ministère" type="date" value={f.dateAgr} onChange={set('dateAgr')} />
+      <PmeFormField name="expAgr" label="Expiration agrément" type="date" value={f.expAgr} onChange={set('expAgr')} />
     </div>
     <div className="row"><button className="btn sec" onClick={onClose}>Annuler</button>
       <button className="btn" onClick={() => f.nom.trim() ? onSave(f) : alert('Le nom est obligatoire')}>Enregistrer</button></div>
