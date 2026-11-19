@@ -18,6 +18,8 @@ const MORATORIUM_STATUS_LABELS = { active: 'Moratoire en cours', soon: 'Expire p
 const MORATORIUM_STATUS_COLORS = { active: 'vert', soon: 'orange', expired: 'rouge', upcoming: 'bleu', none: 'gris' }
 const PURCHASE_STATUS_LABELS = { EN_ATTENTE: 'En attente de validation', VALIDE: 'Validé', ANNULE: 'Annulé' }
 const PURCHASE_STATUS_COLORS = { EN_ATTENTE: 'orange', VALIDE: 'vert', ANNULE: 'gris' }
+const DEFAULT_BAG_PRICE_CDF = 700
+const DEFAULT_CDF_PER_USD = 2300
 const ACTIVITY_LABELS = {
   'pme.created': 'PME ajoutée', 'pme.updated': 'PME modifiée', 'pme.archived': 'PME archivée',
   'pme.restored': 'PME restaurée', 'pme.dossier.updated': 'Dossier administratif modifié',
@@ -212,6 +214,7 @@ const toAchat = (a) => ({
   id: a.id, pmeId: a.pme_id, date: a.date, qte: a.qte, detail: a.detail || [],
   designation: a.designation || '', unite: a.unite || 'sacs',
   prixUnitaire: a.prix_unitaire, devise: a.devise || '', montantTotal: a.montant_total,
+  exchangeRateCdfPerUsd: a.taux_cdf_par_usd, montantCdf: a.montant_cdf, montantUsd: a.montant_usd,
   status: a.status || 'VALIDE',
 })
 const toMoratorium = row => ({
@@ -228,6 +231,19 @@ const isTrashBagPurchase = purchase => {
   return /\bsacs?\s*(?:(?:a|pour)\s*)?poubelles?\b/.test(designation)
     && /^sacs?(?:\s+poubelles?)?$/.test(unit)
 }
+const getPurchaseAmounts = purchase => {
+  const total = Number(purchase.montantTotal)
+  const cdf = purchase.montantCdf == null
+    ? (purchase.devise === 'CDF' && purchase.montantTotal != null ? total : null)
+    : Number(purchase.montantCdf)
+  const usd = purchase.montantUsd == null
+    ? (purchase.devise === 'USD' && purchase.montantTotal != null ? total : null)
+    : Number(purchase.montantUsd)
+  return { cdf, usd }
+}
+const formatMoney = (amount, currency) => amount == null
+  ? '—'
+  : `${Number(amount).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`
 const getMoratoriumStatus = (moratorium, today) => {
   if (!moratorium) return { code: 'none', daysRemaining: null }
   const daysUntilStart = Math.ceil((Date.parse(`${moratorium.startsOn}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000)
@@ -380,7 +396,12 @@ export default function App() {
   const [authorizationHistory, setAuthorizationHistory] = useState([])
   const [verificationResult, setVerificationResult] = useState(undefined)
   const [certificate, setCertificate] = useState(null)
-  const [cfg, setCfg] = useState({ alerte: 30, inactif: 90 })
+  const [cfg, setCfg] = useState({
+    alerte: 30, inactif: 90,
+    taux_cdf_par_usd: DEFAULT_CDF_PER_USD,
+  })
+  const [pricingDraft, setPricingDraft] = useState({ taux_cdf_par_usd: DEFAULT_CDF_PER_USD })
+  const [purchasePricingAvailable, setPurchasePricingAvailable] = useState(false)
   const [notice, setNotice] = useState('')
   const [tab, setTab] = useState('dash')
   const [summaryQuery, setSummaryQuery] = useState('')
@@ -506,7 +527,7 @@ export default function App() {
       const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
-        supabase.from('settings').select('alerte, inactif').eq('id', true).single(),
+        supabase.from('settings').select('*').eq('id', true).single(),
         fetchAll('pme_documents', 'created_at', false),
         fetchAll('pme_dossier_history', 'created_at', false),
         fetchAll('pme_authorization_history', 'created_at', false),
@@ -522,7 +543,15 @@ export default function App() {
       }
       if (cancelled) return
       const allPmes = pmeRows.map(toPme)
-      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg(settingsResult.data); setDataReady(true)
+      const settings = settingsResult.data
+      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg({
+        ...settings,
+        taux_cdf_par_usd: settings.taux_cdf_par_usd ?? DEFAULT_CDF_PER_USD,
+      }); setPricingDraft({
+        taux_cdf_par_usd: settings.taux_cdf_par_usd ?? DEFAULT_CDF_PER_USD,
+      }); setPurchasePricingAvailable(
+        Object.prototype.hasOwnProperty.call(settings, 'taux_cdf_par_usd'),
+      ); setDataReady(true)
     }
     load().catch(error => { if (!cancelled) { setAccessError(error.message); setDataReady(true) } })
     return () => { cancelled = true }
@@ -779,16 +808,17 @@ export default function App() {
   const dashboardPmes = [...pmes, ...archivedPmes]
   const dashboardPmeTrend = aggregateBuckets(dashboardPmes, dashboardBuckets, dashboardPeriod, pme => pme.createdAt)
   const dashboardPurchaseTrend = aggregateBuckets(achats, dashboardBuckets, dashboardPeriod, purchase => purchase.date)
+  const validatedPurchases = achats.filter(purchase => purchase.status === 'VALIDE')
   const dashboardAmountTrends = ['CDF', 'USD'].map(currency => ({
     currency,
     data: aggregateBuckets(
-      achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null),
+      validatedPurchases.filter(purchase => getPurchaseAmounts(purchase)[currency === 'CDF' ? 'cdf' : 'usd'] != null),
       dashboardBuckets,
       dashboardPeriod,
       purchase => purchase.date,
-      purchase => Number(purchase.montantTotal),
+      purchase => getPurchaseAmounts(purchase)[currency === 'CDF' ? 'cdf' : 'usd'],
     ),
-  })).filter(series => achats.some(purchase => purchase.devise === series.currency && purchase.montantTotal != null))
+  })).filter(series => validatedPurchases.some(purchase => getPurchaseAmounts(purchase)[series.currency === 'CDF' ? 'cdf' : 'usd'] != null))
   const dashboardActivityTrend = aggregateBuckets(dashboardActivities, dashboardBuckets, dashboardPeriod, activity => activity.created_at)
   const dashboardActivityByStaff = Object.entries(dashboardActivities.reduce((totals, activity) => {
     const key = bucketKeyFor(activity.created_at, dashboardPeriod)
@@ -800,9 +830,8 @@ export default function App() {
   }, {})).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8)
   const dashboardPurchaseTotals = ['CDF', 'USD'].map(currency => ({
     currency,
-    amount: achats.filter(purchase => purchase.devise === currency && purchase.montantTotal != null)
-      .reduce((sum, purchase) => sum + Number(purchase.montantTotal), 0),
-  })).filter(total => achats.some(purchase => purchase.devise === total.currency && purchase.montantTotal != null))
+    amount: validatedPurchases.reduce((sum, purchase) => sum + (getPurchaseAmounts(purchase)[currency === 'CDF' ? 'cdf' : 'usd'] || 0), 0),
+  })).filter(total => validatedPurchases.some(purchase => getPurchaseAmounts(purchase)[total.currency === 'CDF' ? 'cdf' : 'usd'] != null))
   const summaryYear = Number(moratoriumToday.slice(0, 4))
   const moratoriumByPme = new Map()
   for (const moratorium of moratoria) {
@@ -818,12 +847,26 @@ export default function App() {
         : pme.authorizationStatus === 'NON_CONFORME'
           ? 'NON_CONFORME'
           : 'EN_ATTENTE'
-    const trashBagQuantity = achats.reduce((sum, purchase) => {
-      if (purchase.pmeId !== pme.id || purchase.status !== 'VALIDE' || !isTrashBagPurchase(purchase)) return sum
+    const annualTrashBags = achats.filter(purchase => {
+      if (purchase.pmeId !== pme.id || purchase.status !== 'VALIDE' || !isTrashBagPurchase(purchase)) return false
       const purchaseYear = Number(String(purchase.date || '').slice(0, 4))
-      return purchaseYear === summaryYear && purchase.date <= moratoriumToday ? sum + Number(purchase.qte || 0) : sum
-    }, 0)
-    return { pme, moratorium, moratoriumStatus, authorizationStatus, trashBagQuantity }
+      return purchaseYear === summaryYear && purchase.date <= moratoriumToday
+    })
+    const trashBagQuantity = annualTrashBags.reduce((sum, purchase) => sum + Number(purchase.qte || 0), 0)
+    const trashBagAmounts = annualTrashBags.reduce((totals, purchase) => {
+      const amounts = getPurchaseAmounts(purchase)
+      if (amounts.cdf != null) { totals.cdf += amounts.cdf; totals.cdfCount += 1 }
+      if (amounts.usd != null) { totals.usd += amounts.usd; totals.usdCount += 1 }
+      return totals
+    }, { cdf: 0, usd: 0, cdfCount: 0, usdCount: 0 })
+    if (!annualTrashBags.length) {
+      trashBagAmounts.cdf = 0
+      trashBagAmounts.usd = 0
+    } else {
+      if (!trashBagAmounts.cdfCount) trashBagAmounts.cdf = null
+      if (!trashBagAmounts.usdCount) trashBagAmounts.usd = null
+    }
+    return { pme, moratorium, moratoriumStatus, authorizationStatus, trashBagQuantity, trashBagAmounts }
   })
   const filteredSummaryRows = summaryRows
     .filter(row => !summaryQuery.trim() || row.pme.nom.toLowerCase().includes(summaryQuery.trim().toLowerCase()))
@@ -1033,12 +1076,18 @@ export default function App() {
     setDetail(null)
   }
   const saveAchat = async (a) => {
-    const hasPrice = a.prixUnitaire !== '' && a.prixUnitaire != null
+    const isTrashBag = isTrashBagPurchase(a)
+    if (isTrashBag && !purchasePricingAvailable) {
+      reportError(new Error('Applique d’abord la migration de tarification des achats sur le projet Supabase GTWM.'))
+      return
+    }
+    const hasPrice = isTrashBag || (a.prixUnitaire !== '' && a.prixUnitaire != null)
     const payload = {
       pme_id: a.pmeId, date: a.date, qte: Number(a.qte), detail: a.detail || [],
-      designation: a.designation?.trim() || '', unite: a.unite?.trim() || 'sacs',
-      prix_unitaire: hasPrice ? Number(a.prixUnitaire) : null,
-      devise: hasPrice ? a.devise : null,
+      designation: isTrashBag ? 'Sacs-poubelle' : a.designation?.trim() || '',
+      unite: isTrashBag ? 'sacs' : a.unite?.trim() || 'sacs',
+      prix_unitaire: isTrashBag ? DEFAULT_BAG_PRICE_CDF : hasPrice ? Number(a.prixUnitaire) : null,
+      devise: isTrashBag ? 'CDF' : hasPrice ? a.devise : null,
     }
     const { data, error } = a.id
       ? await supabase.from('achats').update(payload).eq('id', a.id).select().single()
@@ -1122,9 +1171,18 @@ export default function App() {
     newWindow.location.replace(data.signedUrl)
   }
   const saveSettings = async (next) => {
-    setCfg(next)
-    const { error } = await supabase.from('settings').update(next).eq('id', true)
+    const payload = { alerte: next.alerte, inactif: next.inactif }
+    if (purchasePricingAvailable) payload.taux_cdf_par_usd = next.taux_cdf_par_usd
+    const { error } = await supabase.from('settings').update(payload).eq('id', true)
     if (error) reportError(error)
+    else setCfg(next)
+  }
+  const savePurchasePricing = () => {
+    if (!Number.isFinite(Number(pricingDraft.taux_cdf_par_usd)) || Number(pricingDraft.taux_cdf_par_usd) <= 0) {
+      reportError(new Error('Le taux CDF/USD doit être un nombre positif.'))
+      return
+    }
+    saveSettings({ ...cfg, ...pricingDraft })
   }
 
   if (!supabase) return <Gate title="Configuration requise">Ajoute VITE_SUPABASE_URL et VITE_SUPABASE_PUBLISHABLE_KEY aux variables d’environnement.</Gate>
@@ -1199,7 +1257,7 @@ export default function App() {
   const purchaseDashboardCards = [
     { label: 'Achats enregistrés', value: achats.length },
     ...dashboardPurchaseTotals.map(total => ({
-      label: `Montant saisi — ${total.currency}`,
+      label: `Montant total — ${total.currency}`,
       value: `${total.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${total.currency}`,
     })),
   ]
@@ -1211,11 +1269,13 @@ export default function App() {
     row.moratoriumStatus.daysRemaining,
     row.moratorium?.expiresOn || '',
     row.trashBagQuantity,
+    row.trashBagAmounts.cdf,
+    row.trashBagAmounts.usd,
   ])
   const exportSummaryExcel = () => {
     const blob = createXlsxBlob([{
       name: 'Tableau recapitulatif',
-      headers: ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours avant expiration', 'Date de fin du moratoire', `Sacs achetés en ${summaryYear}`],
+      headers: ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours avant expiration', 'Date de fin du moratoire', `Sacs achetés en ${summaryYear}`, `Montant CDF en ${summaryYear}`, `Équivalent USD en ${summaryYear}`],
       rows: summaryExportData,
     }])
     const url = URL.createObjectURL(blob)
@@ -1232,7 +1292,7 @@ export default function App() {
       setNotice('Autorise les fenêtres contextuelles pour ouvrir l’export PDF.')
       return
     }
-    const headers = ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours restants', 'Fin du moratoire', `Sacs achetés en ${summaryYear}`]
+    const headers = ['Nom de la PME', 'Statut de l’autorisation', 'Statut du moratoire', 'Jours restants', 'Fin du moratoire', `Sacs achetés en ${summaryYear}`, `Montant CDF en ${summaryYear}`, `Équivalent USD en ${summaryYear}`]
     const rows = summaryExportData.map(row => row.map(value => `<td>${xmlEscape(value == null ? '—' : value)}</td>`).join(''))
     printWindow.document.open()
     printWindow.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Tableau récapitulatif des PME</title><style>@page{size:A4 landscape;margin:14mm}body{font-family:Arial,sans-serif;color:#1d2b3a}h1{color:#102a46}p{color:#4b5c70;font-size:12px}table{width:100%;border-collapse:collapse;font-size:10px}th,td{border:1px solid #dce5ee;padding:7px;text-align:left}th{color:#fff;background:#183c63}tbody tr:nth-child(even){background:#f2f6fb}</style></head><body><h1>Tableau récapitulatif des PME</h1><p>REGEDEK PME · Données au ${xmlEscape(fmt(moratoriumToday))} · Achats validés pour l’année civile ${summaryYear}</p><table><thead><tr>${headers.map(header => `<th>${xmlEscape(header)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row}</tr>`).join('')}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`)
@@ -1316,8 +1376,8 @@ export default function App() {
           chart={<div className="dashboard-chart-stack">
             <TrendBarChart title="Évolution du nombre d’achats" data={dashboardPurchaseTrend} />
             {dashboardAmountTrends.length
-              ? dashboardAmountTrends.map(series => <TrendBarChart key={series.currency} title={`Évolution des montants — ${series.currency}`} data={series.data} format={value => value.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} note="Les devises ne sont pas additionnées." />)
-              : <section className="dashboard-chart"><h3>Montants d’achats</h3><p className="chart-empty">Aucun prix saisi; aucun montant n’est estimé à partir des quantités.</p></section>}
+              ? dashboardAmountTrends.map(series => <TrendBarChart key={series.currency} title={`Évolution des montants — ${series.currency}`} data={series.data} format={value => value.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} note="Les équivalents utilisent le taux enregistré pour chaque achat; les achats historiques sans taux ne sont pas convertis." />)
+              : <section className="dashboard-chart"><h3>Montants d’achats validés</h3><p className="chart-empty">Aucun achat validé avec un montant enregistré; aucun montant n’est estimé à partir des quantités.</p></section>}
           </div>}
         />
         {canReadActivities && <DashboardStatSection
@@ -1428,13 +1488,15 @@ export default function App() {
           </select>
         </div>
         <div className="tw summary-table-wrap"><table className="summary-table">
-          <thead><tr><th>Nom de la PME</th><th>Statut de l’autorisation</th><th>Statut du moratoire</th><th><button className="table-sort" onClick={() => sortSummaryBy('expiry')}>Jours restants · expiration</button></th><th><button className="table-sort" onClick={() => sortSummaryBy('bags')}>Sacs achetés en {summaryYear}</button></th><th>Actions</th></tr></thead>
+          <thead><tr><th>Nom de la PME</th><th>Statut de l’autorisation</th><th>Statut du moratoire</th><th><button className="table-sort" onClick={() => sortSummaryBy('expiry')}>Jours restants · expiration</button></th><th><button className="table-sort" onClick={() => sortSummaryBy('bags')}>Sacs achetés en {summaryYear}</button></th><th>Total en CDF</th><th>Équivalent USD</th><th>Actions</th></tr></thead>
           <tbody>{filteredSummaryRows.map(row => <tr key={row.pme.id}>
             <td><button className="summary-company-link" onClick={() => setDetail(row.pme)}>{row.pme.nom}</button></td>
             <td><Tag s={{ label: ({ AUTORISE: 'Autorisée', EN_ATTENTE: 'En attente', EXPIRE: 'Expirée', NON_CONFORME: 'Non autorisée' })[row.authorizationStatus], cls: ({ AUTORISE: 'vert', EN_ATTENTE: 'orange', EXPIRE: 'rouge', NON_CONFORME: 'rouge' })[row.authorizationStatus] }} /></td>
             <td>{moratoriaAvailable ? <><Tag s={{ label: MORATORIUM_STATUS_LABELS[row.moratoriumStatus.code], cls: MORATORIUM_STATUS_COLORS[row.moratoriumStatus.code] }} />{row.moratorium && <small className="summary-date">Du {fmt(row.moratorium.startsOn)} au {fmt(row.moratorium.expiresOn)}</small>}</> : 'Indisponible'}</td>
             <td>{!moratoriaAvailable ? '—' : !row.moratorium ? '—' : row.moratoriumStatus.daysRemaining < 0 ? `Expiré depuis ${Math.abs(row.moratoriumStatus.daysRemaining)} j` : row.moratoriumStatus.code === 'upcoming' ? `Débute dans ${row.moratoriumStatus.daysUntilStart} j` : `${row.moratoriumStatus.daysRemaining} j`}</td>
             <td>{row.trashBagQuantity.toLocaleString('fr-FR')}</td>
+            <td>{formatMoney(row.trashBagAmounts.cdf, 'CDF')}</td>
+            <td>{formatMoney(row.trashBagAmounts.usd, 'USD')}</td>
             <td><div className="row summary-row-actions">
               {row.moratorium && <button className="btn sec" onClick={() => setMoratoriumHistoryPme(row.pme)}>Historique</button>}
               {row.moratorium?.attachmentPath && <button className="btn sec" onClick={() => openMoratoriumAttachment(row.moratorium)}>Justificatif</button>}
@@ -1446,11 +1508,11 @@ export default function App() {
       </section>}
 
       {tab === 'achats' && <>
-        <div className="bar">{canCreatePurchase && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '', designation: '', unite: 'sacs', prixUnitaire: '', devise: 'CDF' })}>+ Enregistrer un achat</button>}</div>
-        <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Produit / service</th><th>Quantité</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody>
+        <div className="bar">{canCreatePurchase && <button className="btn" onClick={() => setAchatFor({ pmeId: pmes[0]?.id, date: new Date().toISOString().slice(0, 10), qte: '', designation: 'Sacs-poubelle', unite: 'sacs', prixUnitaire: DEFAULT_BAG_PRICE_CDF, devise: 'CDF' })}>+ Enregistrer un achat</button>}</div>
+        <div className="tw"><table><thead><tr><th>Date</th><th>PME</th><th>Produit / service</th><th>Quantité</th><th>Total en CDF</th><th>Équivalent USD</th><th>Statut</th><th></th></tr></thead><tbody>
           {[...achats].sort((a, b) => b.date.localeCompare(a.date)).map(a => <tr key={a.id}>
             <td>{fmt(a.date)}</td><td>{rows.find(p => p.id === a.pmeId)?.numero ?? '—'} — {[...pmes, ...archivedPmes].find(p => p.id === a.pmeId)?.nom || '?'}</td><td>{a.designation || '—'}</td>
-            <td>{Number(a.qte).toLocaleString('fr')} {a.unite || 'sacs'}</td><td>{a.montantTotal == null ? '—' : `${Number(a.montantTotal).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${a.devise}`}</td>
+            <td>{Number(a.qte).toLocaleString('fr')} {a.unite || 'sacs'}</td><td>{formatMoney(getPurchaseAmounts(a).cdf, 'CDF')}</td><td>{formatMoney(getPurchaseAmounts(a).usd, 'USD')}</td>
             <td><Tag s={{ label: PURCHASE_STATUS_LABELS[a.status], cls: PURCHASE_STATUS_COLORS[a.status] }} /></td>
             <td>{(canUpdatePurchase || canDeletePurchase || canValidatePurchases) && <div className="row">
               {canValidatePurchases && a.status !== 'VALIDE' && <button className="btn sec" onClick={() => updatePurchaseStatus(a, 'VALIDE')}>Valider</button>}
@@ -1485,17 +1547,22 @@ export default function App() {
       />}
 
       {tab === 'cfg' && <div className="box" style={{ margin: 0 }}>
-        <h2>Règles de statut</h2>
+        <h2>Règles et montants des achats</h2>
         <div className="grid">
           <div><label>Alerte « À renouveler » (jours avant expiration)</label><input type="number" value={cfg.alerte} disabled={!hasPermission('settings.update')} onChange={e => saveSettings({ ...cfg, alerte: +e.target.value })} /></div>
           <div><label>PME « Inactive » après (jours sans achat)</label><input type="number" value={cfg.inactif} disabled={!hasPermission('settings.update')} onChange={e => saveSettings({ ...cfg, inactif: +e.target.value })} /></div>
+          {purchasePricingAvailable && <>
+            <div><label>Taux de conversion (CDF pour 1 USD)</label><input type="number" min="0.01" step="0.01" value={pricingDraft.taux_cdf_par_usd} disabled={!hasPermission('settings.update')} onChange={e => setPricingDraft(current => ({ ...current, taux_cdf_par_usd: e.target.value }))} /></div>
+            {hasPermission('settings.update') && <div className="full"><button className="btn" onClick={savePurchasePricing}>Enregistrer le prix et le taux</button></div>}
+          </>}
         </div>
+        {!purchasePricingAvailable && <p className="metric-note">Les paramètres des achats seront disponibles après application de la migration de tarification Supabase.</p>}
         {!hasPermission('settings.update') && <p>Seul un utilisateur autorisé peut modifier ces règles.</p>}
       </div>}
     </main>
 
     {edit && <PmeForm p={edit} onSave={savePme} onClose={() => setEdit(null)} />}
-    {achatFor && <AchatForm a={achatFor} pmes={pmes} onSave={saveAchat} onClose={() => setAchatFor(null)} />}
+    {achatFor && <AchatForm a={achatFor} pmes={pmes} bagPriceCdf={DEFAULT_BAG_PRICE_CDF} cdfPerUsd={cfg.taux_cdf_par_usd} pricingAvailable={purchasePricingAvailable} onSave={saveAchat} onClose={() => setAchatFor(null)} />}
     {moratoriumFormOpen && <MoratoriumForm pmes={pmes} today={moratoriumToday} busy={moratoriumBusy} onSave={saveMoratorium} onClose={() => setMoratoriumFormOpen(false)} />}
     {moratoriumHistoryPme && <MoratoriumHistory
       pme={moratoriumHistoryPme}
@@ -1540,8 +1607,8 @@ export default function App() {
           <strong>Activité :</strong> <Tag s={r.sAct} /> {r.sAct.jours !== null && `(dernier achat il y a ${r.sAct.jours} j)`}
         </p>
         <section className="purchase-detail">
-          <h2 className="subhead">Achats ({r.totalSacs.toLocaleString('fr')} sacs)</h2>
-          {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {Number(a.qte).toLocaleString('fr')} sacs</li>)}</ul> : <p>Aucun achat.</p>}
+          <h2 className="subhead">Historique des achats ({r.mine.length})</h2>
+          {r.mine.length ? <ul>{r.mine.map(a => <li key={a.id}>{fmt(a.date)} : {a.designation || 'Achat'} — {Number(a.qte).toLocaleString('fr')} {a.unite || 'sacs'} · {formatMoney(getPurchaseAmounts(a).cdf, 'CDF')} · {formatMoney(getPurchaseAmounts(a).usd, 'USD')}</li>)}</ul> : <p>Aucun achat.</p>}
         </section>
         <div className="row">
           {canArchivePme && <button className="btn red" onClick={() => setPmeArchived(r, true)}>Archiver la PME</button>}
@@ -2123,7 +2190,8 @@ function ReportCenter({ pmes, achats, documents }) {
   }).map(achat => {
     const pme = pmeById.get(String(achat.pmeId))
     const created = actorFor('purchase.created', 'purchase', achat.id)
-    return [achat.id, achat.date, pme?.nom || 'PME inconnue', achat.designation || '', Number(achat.qte), achat.unite || 'sacs', achat.prixUnitaire == null ? '' : Number(achat.prixUnitaire), achat.devise || '', achat.montantTotal == null ? '' : Number(achat.montantTotal), created?.actor_email || 'Non renseigné']
+    const amounts = getPurchaseAmounts(achat)
+    return [achat.id, achat.date, pme?.nom || 'PME inconnue', achat.designation || '', Number(achat.qte), achat.unite || 'sacs', achat.prixUnitaire == null ? '' : Number(achat.prixUnitaire), achat.devise || '', achat.montantTotal == null ? '' : Number(achat.montantTotal), amounts.cdf, amounts.usd, achat.exchangeRateCdfPerUsd ?? '', PURCHASE_STATUS_LABELS[achat.status] || achat.status, created?.actor_email || 'Non renseigné']
   })
   const authorizationRows = pmes.filter(pme => {
     const actor = recentActorForPme(pme.id)
@@ -2150,11 +2218,11 @@ function ReportCenter({ pmes, achats, documents }) {
   })
   const sheetsByType = {
     pmes: [{ name: 'PME', headers: ['ID PME', 'Entreprise', 'Catégorie', 'Date d’enregistrement', 'Statut du dossier', 'Statut d’autorisation', 'Administrateur'], rows: pmeRows }],
-    purchases: [{ name: 'Achats', headers: ['ID achat', 'Date', 'Entreprise', 'Produit / service', 'Quantité', 'Unité', 'Prix unitaire', 'Devise', 'Montant total', 'Administrateur'], rows: purchaseRows }],
+    purchases: [{ name: 'Achats', headers: ['ID achat', 'Date', 'Entreprise', 'Produit / service', 'Quantité', 'Unité', 'Prix unitaire', 'Devise', 'Montant total', 'Montant équivalent CDF', 'Montant équivalent USD', 'Taux CDF/USD appliqué', 'Statut', 'Administrateur'], rows: purchaseRows }],
     authorizations: [{ name: 'Autorisations', headers: ['ID PME', 'Entreprise', 'Nature / référence', 'Date d’obtention', 'Date d’expiration', 'Statut', 'Documents associés', 'Administrateur'], rows: authorizationRows }],
     global: [
       { name: 'PME', headers: ['ID PME', 'Entreprise', 'Catégorie', 'Date d’enregistrement', 'Statut du dossier', 'Statut d’autorisation', 'Administrateur'], rows: pmeRows },
-      { name: 'Achats', headers: ['ID achat', 'Date', 'Entreprise', 'Produit / service', 'Quantité', 'Unité', 'Prix unitaire', 'Devise', 'Montant total', 'Administrateur'], rows: purchaseRows },
+      { name: 'Achats', headers: ['ID achat', 'Date', 'Entreprise', 'Produit / service', 'Quantité', 'Unité', 'Prix unitaire', 'Devise', 'Montant total', 'Montant équivalent CDF', 'Montant équivalent USD', 'Taux CDF/USD appliqué', 'Statut', 'Administrateur'], rows: purchaseRows },
       { name: 'Autorisations', headers: ['ID PME', 'Entreprise', 'Nature / référence', 'Date d’obtention', 'Date d’expiration', 'Statut', 'Documents associés', 'Administrateur'], rows: authorizationRows },
       { name: 'Activités', headers: ['Date et heure', 'Administrateur', 'Activité réalisée', 'PME ou élément concerné'], rows: activityRows },
     ],
@@ -2246,40 +2314,80 @@ function PmeForm({ p, onSave, onClose }) {
   </div></div>
 }
 
-function AchatForm({ a, pmes, onSave, onClose }) {
+function AchatForm({ a, pmes, bagPriceCdf, cdfPerUsd, pricingAvailable, onSave, onClose }) {
+  const isOriginalBag = Boolean(a.id && isTrashBagPurchase(a))
+  const startsWithBags = !a.id || isOriginalBag
+  const initialBagPrice = startsWithBags ? isOriginalBag ? a.prixUnitaire : bagPriceCdf : null
   const [f, setF] = useState({
-    ...a, designation: a.designation || '', unite: a.unite || 'sacs',
-    prixUnitaire: a.prixUnitaire == null ? '' : String(a.prixUnitaire),
+    ...a, productType: startsWithBags ? 'bags' : 'other',
+    designation: startsWithBags ? 'Sacs-poubelle' : a.designation || '',
+    unite: startsWithBags ? 'sacs' : a.unite || 'unité',
+    prixUnitaire: startsWithBags
+      ? initialBagPrice == null ? '' : String(initialBagPrice)
+      : a.prixUnitaire == null ? '' : String(a.prixUnitaire),
     devise: a.devise || 'CDF',
   })
   const set = key => event => setF(current => ({ ...current, [key]: event.target.value }))
+  const isBagPurchase = f.productType === 'bags'
+  const previewRate = a.id && (isOriginalBag === isBagPurchase)
+    ? Number(a.exchangeRateCdfPerUsd)
+    : pricingAvailable ? Number(cdfPerUsd) : Number.NaN
+  const unitPrice = Number(f.prixUnitaire)
+  const hasUnitPrice = f.prixUnitaire !== '' && Number.isFinite(unitPrice)
+  const validQuantity = Number.isInteger(Number(f.qte)) && Number(f.qte) > 0
+  const amount = validQuantity && hasUnitPrice ? Number(f.qte) * unitPrice : null
+  const rateIsValid = Number.isFinite(previewRate) && previewRate > 0
+  const amountCdf = amount == null ? null : f.devise === 'CDF' ? amount : rateIsValid ? amount * previewRate : null
+  const amountUsd = amount == null ? null : f.devise === 'USD' ? amount : rateIsValid ? amount / previewRate : null
   const submit = () => {
+    if (isBagPurchase && !pricingAvailable) {
+      alert('Applique d’abord la migration de tarification des achats sur le projet Supabase GTWM.')
+      return
+    }
     const hasPriceData = Boolean(f.designation.trim() || f.prixUnitaire !== '')
-    if (!f.pmeId || !f.date || !Number.isInteger(Number(f.qte)) || Number(f.qte) <= 0 || !f.unite.trim()) {
+    if (!f.pmeId || !f.date || !Number.isInteger(Number(f.qte)) || Number(f.qte) <= 0 || (!isBagPurchase && !f.unite.trim())) {
       alert('PME, date, unité et quantité entière positive obligatoires.')
       return
     }
-    if ((!f.id || hasPriceData) && (!f.designation.trim() || f.prixUnitaire === '' || !Number.isFinite(Number(f.prixUnitaire)) || Number(f.prixUnitaire) < 0 || !f.devise)) {
+    if (!isBagPurchase && ((!f.id || hasPriceData) && (!f.designation.trim() || f.prixUnitaire === '' || !Number.isFinite(Number(f.prixUnitaire)) || Number(f.prixUnitaire) < 0 || !f.devise))) {
       alert('Pour enregistrer un nouvel achat ou compléter ses montants, renseigne la désignation, le prix unitaire et la devise.')
       return
     }
-    onSave(f)
+    onSave({
+      ...f,
+      designation: isBagPurchase ? 'Sacs-poubelle' : f.designation,
+      unite: isBagPurchase ? 'sacs' : f.unite,
+      prixUnitaire: isBagPurchase ? bagPriceCdf : f.prixUnitaire,
+      devise: isBagPurchase ? 'CDF' : f.devise,
+    })
   }
   return <div className="modal"><div className="box">
     <h2>{f.id ? 'Modifier l’achat' : 'Enregistrer un achat'}</h2>
     <div className="grid">
       <div className="full"><label>PME</label><select value={f.pmeId} onChange={e => setF({ ...f, pmeId: +e.target.value })}>{[...pmes].sort((a, b) => a.id - b.id).map((p, index) => <option key={p.id} value={p.id}>{index + 1} — {p.nom}</option>)}</select></div>
       <div><label>Date d’achat</label><input type="date" value={f.date} onChange={set('date')} required /></div>
-      <div><label>Désignation du produit ou service</label><input value={f.designation} onChange={set('designation')} placeholder="Ex. Sacs-poubelle" required={!f.id} /></div>
+      <div><label>Type d’achat</label><select value={f.productType} onChange={event => {
+        const productType = event.target.value
+        setF(current => productType === 'bags'
+          ? { ...current, productType, designation: 'Sacs-poubelle', unite: 'sacs', prixUnitaire: String(bagPriceCdf), devise: 'CDF' }
+          : { ...current, productType, designation: '', unite: 'unité', prixUnitaire: '', devise: 'CDF' })
+      }} disabled={isOriginalBag}><option value="bags">Sacs-poubelle</option><option value="other">Autre produit ou service</option></select></div>
+      {!isBagPurchase && <div><label>Désignation du produit ou service</label><input value={f.designation} onChange={set('designation')} placeholder="Ex. Transport" required={!f.id} /></div>}
       <div><label>Quantité</label><input type="number" min="1" step="1" value={f.qte} onChange={set('qte')} required /></div>
-      <div><label>Unité</label><input value={f.unite} onChange={set('unite')} required /></div>
-      <div><label>Prix unitaire</label><input type="number" min="0" step="0.01" value={f.prixUnitaire} onChange={set('prixUnitaire')} required={!f.id} /></div>
-      <div><label>Devise</label><select value={f.devise} onChange={set('devise')} required={!f.id || f.prixUnitaire !== ''}><option value="CDF">CDF</option><option value="USD">USD</option></select></div>
-      {f.prixUnitaire !== '' && Number.isFinite(Number(f.prixUnitaire)) && <p className="full metric-note">Montant total calculé : {(Number(f.qte) * Number(f.prixUnitaire)).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {f.devise}</p>}
-      {f.id && f.prixUnitaire === '' && <p className="full metric-note">Aucun montant n’est enregistré pour cet achat historique. Tu peux le renseigner maintenant; aucune valeur ne sera estimée.</p>}
+      {isBagPurchase
+        ? <p className="full metric-note">{f.id ? `Prix enregistré : ${formatMoney(hasUnitPrice ? unitPrice : null, f.devise || 'CDF')}.` : `Prix fixe : ${formatMoney(bagPriceCdf, 'CDF')} par sac.`} Total : {formatMoney(Number.isFinite(amount) ? amount : null, f.devise || 'CDF')} · Équivalent : {formatMoney(Number.isFinite(amountCdf) ? amountCdf : null, 'CDF')} / {formatMoney(Number.isFinite(amountUsd) ? amountUsd : null, 'USD')}{rateIsValid ? ` (taux ${previewRate.toLocaleString('fr-FR')} CDF/USD).` : ' (taux historique non enregistré; conversion indisponible).'}</p>
+        : <>
+          <div><label>Unité</label><input value={f.unite} onChange={set('unite')} required /></div>
+          <div><label>Prix unitaire</label><input type="number" min="0" step="0.01" value={f.prixUnitaire} onChange={set('prixUnitaire')} required={!f.id} /></div>
+          <div><label>Devise</label><select value={f.devise} onChange={set('devise')} required={!f.id || f.prixUnitaire !== ''}><option value="CDF">CDF</option><option value="USD">USD</option></select></div>
+          {f.prixUnitaire !== '' && Number.isFinite(unitPrice) && Number.isFinite(amountUsd) && <p className="full metric-note">Montant total : {formatMoney(amount, f.devise)} · Équivalent : {formatMoney(amountCdf, 'CDF')} / {formatMoney(amountUsd, 'USD')} au taux de {Number(cdfPerUsd).toLocaleString('fr-FR')} CDF/USD.</p>}
+          {!pricingAvailable && <p className="full metric-note">Les équivalents de devise des nouveaux achats seront enregistrés après application de la migration de tarification Supabase.</p>}
+          {f.id && f.prixUnitaire === '' && <p className="full metric-note">Aucun montant n’est enregistré pour cet achat historique. Tu peux le renseigner maintenant; aucune valeur ne sera estimée.</p>}
+        </>}
+      {isBagPurchase && !pricingAvailable && <p className="full notice">La migration de tarification doit être appliquée dans Supabase GTWM avant d’enregistrer un achat de sacs.</p>}
     </div>
     <div className="row"><button className="btn sec" onClick={onClose}>Annuler</button>
-      <button className="btn" onClick={submit}>Enregistrer</button></div>
+      <button className="btn" onClick={submit} disabled={isBagPurchase && !pricingAvailable}>Enregistrer</button></div>
   </div></div>
 }
 
