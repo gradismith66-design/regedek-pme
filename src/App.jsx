@@ -618,6 +618,9 @@ export default function App() {
   const canManageStaff = hasPermission('staff.manage')
   const canReadActivities = hasPermission('activity.read')
   const canReadReports = hasPermission('reports.read')
+  const canExportAllData = hasPermission('pme.read')
+    && hasPermission('purchase.read')
+    && (role === 'agent' || canManageStaff)
   const reportError = (error) => setNotice(`Opération impossible : ${error.message}`)
 
   useEffect(() => {
@@ -1201,6 +1204,111 @@ export default function App() {
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' })); a.download = 'pme_autorisees_regedek.csv'; a.click()
   }
 
+  const exportAllDataExcel = () => {
+    try {
+      const allPmes = [...pmes, ...(canArchivePme ? archivedPmes : [])]
+      const pmeNames = new Map(allPmes.map(pme => [String(pme.id), pme.nom]))
+      const cell = value => value == null
+        ? ''
+        : typeof value === 'object'
+          ? JSON.stringify(value)
+          : value
+      const sheet = (name, headers, rows) => ({
+        name,
+        headers,
+        rows: rows.map(row => row.map(cell)),
+      })
+      const sheets = [
+        sheet('PME', [
+          'ID', 'Nom', 'Type', 'Date de création', 'N° autorisation historique', 'Date autorisation historique',
+          'Expiration autorisation historique', 'Date agrément', 'Expiration agrément', 'Contact', 'Fonction',
+          'Téléphone', 'E-mail', 'Adresse', 'Communes', 'Quartiers', 'Statut juridique', 'Source',
+          'Nombre autorisations', 'Remarque', 'Statut du dossier', 'Observations du dossier',
+          'Statut autorisation', 'Référence autorisation', 'Date délivrance', 'Expiration décision',
+          'Observations autorisation', 'Motif non-conformité', 'Motif décision', 'Nom signataire',
+          'Fonction signataire', 'Date de mise à jour du dossier', 'Date de mise à jour autorisation',
+          'Date d’archivage',
+        ], allPmes.map(pme => [
+          pme.id, pme.nom, pme.type, pme.createdAt, pme.numAut, pme.dateAut, pme.expAut, pme.dateAgr,
+          pme.expAgr, pme.contact, pme.fonction, pme.tel, pme.email, pme.adresse, pme.communes,
+          pme.quartiers, pme.statutJuridique, pme.source, pme.nbAutorisations, pme.note, pme.dossierStatus,
+          pme.dossierObservations, pme.authorizationStatus, pme.authorizationReference,
+          pme.authorizationIssueDate, pme.authorizationExpiryDate, pme.authorizationObservations,
+          pme.nonComplianceReason, pme.authorizationChangeReason, pme.authoritySignerName,
+          pme.authoritySignerTitle, pme.dossierUpdatedAt, pme.authorizationUpdatedAt, pme.archivedAt,
+        ])),
+        sheet('Achats', [
+          'ID', 'PME ID', 'PME', 'Date', 'Quantité', 'Désignation', 'Unité', 'Prix unitaire', 'Devise',
+          'Montant total enregistré', 'Taux CDF/USD appliqué', 'Montant CDF', 'Montant USD', 'Statut', 'Détails',
+        ], achats.map(achat => [
+          achat.id, achat.pmeId, pmeNames.get(String(achat.pmeId)), achat.date, achat.qte,
+          achat.designation, achat.unite, achat.prixUnitaire, achat.devise, achat.montantTotal,
+          achat.exchangeRateCdfPerUsd, achat.montantCdf, achat.montantUsd, achat.status, achat.detail,
+        ])),
+        sheet('Documents', [
+          'ID', 'PME ID', 'PME', 'Document', 'Obligatoire', 'Statut', 'Nom du fichier', 'Type MIME',
+          'Taille (octets)', 'Observations', 'Motif de rejet', 'Créé le', 'Modifié le',
+        ], documents.map(document => [
+          document.id, document.pmeId, pmeNames.get(String(document.pmeId)), document.name,
+          document.required, document.status, document.filename, document.mime, document.size,
+          document.observations, document.rejectionReason, document.createdAt, document.updatedAt,
+        ])),
+        sheet('Inspections', [
+          'ID', 'PME ID', 'PME', 'Résultat', 'Observations', 'Date inspection', 'Inspecteur ID', 'Créé le',
+        ], inspections.map(inspection => [
+          inspection.id, inspection.pmeId, pmeNames.get(String(inspection.pmeId)), inspection.result,
+          inspection.observations, inspection.date, inspection.inspectorId, inspection.createdAt,
+        ])),
+        sheet('Historique dossiers', [
+          'ID', 'PME ID', 'PME', 'Type événement', 'Ancien statut', 'Nouveau statut', 'Observations',
+          'ID document', 'Détails', 'Utilisateur ID', 'Date',
+        ], dossierHistory.map(history => [
+          history.id, history.pme_id, pmeNames.get(String(history.pme_id)), history.event_type,
+          history.old_status, history.new_status, history.observations, history.document_id,
+          history.details, history.actor_id, history.created_at,
+        ])),
+        sheet('Historique autorisations', [
+          'ID', 'PME ID', 'PME', 'Ancien statut', 'Nouveau statut', 'Motif', 'Référence autorisation',
+          'Date délivrance', 'Expiration', 'Observations', 'Signataire', 'Fonction signataire',
+          'Utilisateur ID', 'Date',
+        ], authorizationHistory.map(history => [
+          history.id, history.pme_id, pmeNames.get(String(history.pme_id)), history.old_status,
+          history.new_status, history.reason, history.authorization_reference, history.issue_date,
+          history.expiry_date, history.observations, history.signer_name, history.signer_title,
+          history.actor_id, history.created_at,
+        ])),
+      ]
+      if (moratoriaAvailable) {
+        sheets.splice(2, 0, sheet('Moratoires', [
+          'ID', 'PME ID', 'PME', 'Début', 'Fin', 'Durée (jours)', 'Motif', 'Observations',
+          'Justificatif', 'Administrateur', 'E-mail administrateur', 'Créé le',
+        ], moratoria.map(moratorium => [
+          moratorium.id, moratorium.pmeId, pmeNames.get(String(moratorium.pmeId)),
+          moratorium.startsOn, moratorium.expiresOn, moratorium.durationDays, moratorium.reason,
+          moratorium.observations, moratorium.attachmentName, moratorium.grantedByName,
+          moratorium.grantedByEmail, moratorium.createdAt,
+        ])))
+      }
+      sheets.push(sheet('Paramètres', ['Paramètre', 'Valeur'], [
+        ['Délai d’alerte (jours)', cfg.alerte],
+        ['Seuil d’inactivité (jours)', cfg.inactif],
+        ['Taux CDF par USD', cfg.taux_cdf_par_usd],
+      ]))
+      const blob = createXlsxBlob(sheets)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `export-complet-regedek-${todayKinshasa()}.xlsx`
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice(moratoriaAvailable
+        ? 'Le classeur Excel contenant les données accessibles a été téléchargé.'
+        : 'Le classeur Excel a été téléchargé. Les moratoires ont été omis car leur table n’est pas disponible sur ce projet Supabase.')
+    } catch (error) {
+      reportError(error)
+    }
+  }
+
   const go = (stat, field = 'fStatAut') => {
     setFStatAut(field === 'fStatAut' ? stat : '')
     setFStatMin(field === 'fStatMin' ? stat : '')
@@ -1310,6 +1418,7 @@ export default function App() {
   return (<>
     <header className="app-header">
       <Brand compact />
+      {canExportAllData && <button className="btn sec" onClick={exportAllDataExcel}>Télécharger toutes les données Excel</button>}
       {session && <button className="btn sec sign-out" onClick={signOut}>Se déconnecter</button>}
     </header>
     <div className="app-navigation">
