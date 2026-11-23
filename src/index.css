@@ -990,6 +990,11 @@ td:first-child b {
 .staff-manager .permission-list { display: grid; gap: 5px; min-width: 220px; }
 .staff-manager .permission-list .check { justify-content: flex-start; font-size: 12px; }
 .staff-manager .permission-list .check input { flex: 0 0 auto; }
+.inspection-attachments { display: grid; min-width: 220px; gap: 7px; }
+.inspection-attachment-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.inspection-attachment-list > li { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.inspection-attachment-list > li > span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.inspection-attachments details { font-size: 12px; }
 .upload-small { display: grid; gap: 4px; min-width: 170px; color: var(--blue-700); font-size: 12px; }
 .upload-small input { min-height: auto; padding: 4px; font-size: 11px; }
 .history-list { display: grid; gap: 8px; padding-left: 20px; }
