@@ -4,11 +4,21 @@ import { statutExp, statutActivite } from './status.js'
 
 const Tag = ({ s }) => <span className={`tag ${s.cls}`}>{s.label}</span>
 const fmt = (d) => d ? d.split('-').reverse().join('/') : '—'
+const localDateTimeInput = value => {
+  const date = new Date(value)
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 16)
+}
 const normalize = (v) => (v ?? '').toString().trim()
 const supabaseProjectHost = import.meta.env.VITE_SUPABASE_URL?.match(/^https?:\/\/([^/]+)/)?.[1] || 'inconnu'
 const FIRST_ADMIN_EMAIL = 'gradismith66@gmail.com'
 const DOSSIER_STATUSES = ['DOSSIER_NON_SOUMIS', 'DOSSIER_RECU', 'DOSSIER_INCOMPLET', 'DOCUMENTS_MANQUANTS', 'EN_COURS_DE_VERIFICATION', 'DOSSIER_COMPLET', 'VALIDE_ADMINISTRATIVEMENT', 'REJETE_ADMINISTRATIVEMENT']
 const AUTH_STATUSES = ['EXPIRE', 'EN_ETUDE_ADMINISTRATIVE', 'EN_ATTENTE_INSPECTION', 'EN_ATTENTE_SIGNATURE', 'AUTORISE', 'NON_CONFORME']
+const INSPECTION_APPOINTMENT_STATUSES = ['PLANIFIEE', 'EFFECTUEE', 'REPORTEE', 'ANNULEE']
+const INSPECTION_APPOINTMENT_LABELS = { PLANIFIEE: 'Planifiée', EFFECTUEE: 'Effectuée', REPORTEE: 'Reportée', ANNULEE: 'Annulée' }
+const PHYSICAL_DOCUMENT_STATUSES = ['ATTENDU', 'PRESENTE', 'MANQUANT', 'NON_CONFORME']
+const PHYSICAL_DOCUMENT_LABELS = { ATTENDU: 'Attendu', PRESENTE: 'Présenté', MANQUANT: 'Manquant', NON_CONFORME: 'Non conforme' }
+const PHYSICAL_DOCUMENT_SUGGESTIONS = ['Documents administratifs', 'Pièce d’identité du représentant', 'RCCM', 'Document d’autorisation', 'Agrément']
 const DOSSIER_LABELS = { DOSSIER_NON_SOUMIS: 'Dossier non soumis', DOSSIER_RECU: 'Dossier reçu', DOSSIER_INCOMPLET: 'Dossier incomplet', DOCUMENTS_MANQUANTS: 'Documents manquants', EN_COURS_DE_VERIFICATION: 'En cours de vérification', DOSSIER_COMPLET: 'Dossier complet', VALIDE_ADMINISTRATIVEMENT: 'Validé administrativement', REJETE_ADMINISTRATIVEMENT: 'Rejeté administrativement' }
 const AUTH_LABELS = { EXPIRE: 'Expiré', EN_ETUDE_ADMINISTRATIVE: 'En étude administrative', EN_ATTENTE_INSPECTION: "En attente d'inspection", EN_ATTENTE_SIGNATURE: 'En attente de signature', AUTORISE: 'Autorisé', NON_CONFORME: 'Non conforme' }
 const DOSSIER_COLORS = { DOSSIER_NON_SOUMIS: 'gris', DOSSIER_RECU: 'bleu', DOSSIER_INCOMPLET: 'orange', DOCUMENTS_MANQUANTS: 'rouge-clair', EN_COURS_DE_VERIFICATION: 'violet', DOSSIER_COMPLET: 'bleu-fonce', VALIDE_ADMINISTRATIVEMENT: 'vert', REJETE_ADMINISTRATIVEMENT: 'rouge' }
@@ -209,6 +219,8 @@ const toPme = (p) => ({
 })
 const toDocument = d => ({ id: d.id, pmeId: d.pme_id, name: d.document_name, required: d.is_required, status: d.status, path: d.storage_path, filename: d.original_filename, mime: d.mime_type, size: d.file_size, observations: d.observations, rejectionReason: d.rejection_reason, createdAt: d.created_at, updatedAt: d.updated_at })
 const toInspection = x => ({ id: x.id, pmeId: x.pme_id, result: x.result, observations: x.observations, date: x.inspection_date, inspectorId: x.inspector_id, createdAt: x.created_at })
+const toAppointment = x => ({ id: x.id, pmeId: x.pme_id, scheduledAt: x.scheduled_at, location: x.location, inspectorId: x.inspector_id, instructions: x.instructions, status: x.status, createdBy: x.created_by, updatedBy: x.updated_by, createdAt: x.created_at, updatedAt: x.updated_at })
+const toPhysicalInspectionDocument = x => ({ id: x.id, pmeId: x.pme_id, name: x.document_name, expected: x.is_expected, status: x.status, observations: x.observations, checkedAt: x.checked_at, checkedBy: x.checked_by, createdBy: x.created_by, updatedBy: x.updated_by, createdAt: x.created_at, updatedAt: x.updated_at })
 const toHistory = h => ({ ...h, actor: h.actor_id })
 const toAchat = (a) => ({
   id: a.id, pmeId: a.pme_id, date: a.date, qte: a.qte, detail: a.detail || [],
@@ -392,6 +404,11 @@ export default function App() {
   const [moratoriaAvailable, setMoratoriaAvailable] = useState(true)
   const [documents, setDocuments] = useState([])
   const [inspections, setInspections] = useState([])
+  const [inspectionAppointments, setInspectionAppointments] = useState([])
+  const [inspectionAppointmentHistory, setInspectionAppointmentHistory] = useState([])
+  const [physicalInspectionDocuments, setPhysicalInspectionDocuments] = useState([])
+  const [inspectionDocumentHistory, setInspectionDocumentHistory] = useState([])
+  const [inspectionAgents, setInspectionAgents] = useState([])
   const [dossierHistory, setDossierHistory] = useState([])
   const [authorizationHistory, setAuthorizationHistory] = useState([])
   const [verificationResult, setVerificationResult] = useState(undefined)
@@ -524,7 +541,7 @@ export default function App() {
         return
       }
 
-      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows] = await Promise.all([
+      const [pmeRows, achatRows, settingsResult, documentRows, dossierRows, authorizationRows, inspectionRows, appointmentRows, appointmentHistoryRows, physicalDocumentRows, physicalDocumentHistoryRows] = await Promise.all([
         fetchAll('pmes', 'id'),
         fetchAll('achats', 'date', false),
         supabase.from('settings').select('*').eq('id', true).single(),
@@ -532,6 +549,10 @@ export default function App() {
         fetchAll('pme_dossier_history', 'created_at', false),
         fetchAll('pme_authorization_history', 'created_at', false),
         fetchAll('pme_inspection_reports', 'inspection_date', false),
+        fetchAll('pme_inspection_appointments', 'scheduled_at', false),
+        fetchAll('pme_inspection_appointment_history', 'created_at', false),
+        fetchAll('pme_physical_inspection_documents', 'created_at', false),
+        fetchAll('pme_physical_inspection_document_history', 'created_at', false),
       ])
       if (settingsResult.error) throw settingsResult.error
       let moratoriumRows = []
@@ -544,7 +565,7 @@ export default function App() {
       if (cancelled) return
       const allPmes = pmeRows.map(toPme)
       const settings = settingsResult.data
-      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg({
+      setRole(nextRole); setPermissions(currentPermissions); setPmes(allPmes.filter(p => !p.archivedAt)); setArchivedPmes(allPmes.filter(p => p.archivedAt)); setAchats(achatRows.map(toAchat)); setMoratoria(sortMoratoriaLatestFirst(moratoriumRows.map(toMoratorium))); setDocuments(documentRows.map(toDocument)); setInspections(inspectionRows.map(toInspection)); setInspectionAppointments(appointmentRows.map(toAppointment)); setInspectionAppointmentHistory(appointmentHistoryRows); setPhysicalInspectionDocuments(physicalDocumentRows.map(toPhysicalInspectionDocument)); setInspectionDocumentHistory(physicalDocumentHistoryRows); setDossierHistory(dossierRows.map(toHistory)); setAuthorizationHistory(authorizationRows.map(toHistory)); setCfg({
         ...settings,
         taux_cdf_par_usd: settings.taux_cdf_par_usd ?? DEFAULT_CDF_PER_USD,
       }); setPricingDraft({
@@ -610,8 +631,13 @@ export default function App() {
   const canReadSummary = hasPermission('pme.read') && hasPermission('purchase.read')
   const canManageDossier = hasPermission('pme.dossier.manage')
   const canManageAuthorization = hasPermission('pme.authorization.manage')
-  const canArchivePme = hasPermission('pme.archive')
+  const canArchivePme = role === 'admin' && hasPermission('pme.archive')
+  const canDeletePme = role === 'admin' && hasPermission('pme.delete')
   const canCreateInspection = hasPermission('inspection.create')
+  const canReadInspections = hasPermission('inspection.read')
+  const canScheduleInspections = hasPermission('inspection.schedule')
+  const canUpdateInspections = hasPermission('inspection.update')
+  const canManagePhysicalInspectionDocuments = hasPermission('inspection.documents.manage')
   const canManageDocuments = hasPermission('document.upload') || hasPermission('document.update')
   const canReviewDocuments = hasPermission('document.review')
   const canDeleteDocuments = hasPermission('document.delete')
@@ -648,6 +674,19 @@ export default function App() {
     })
     return () => { active = false }
   }, [tab, canManageStaff])
+
+  useEffect(() => {
+    if (tab !== 'inspections' || (!canScheduleInspections && !canUpdateInspections)) return
+    let active = true
+    supabase.rpc('list_inspection_agents').then(({ data, error }) => {
+      if (!active) return
+      if (error) reportError(error)
+      else setInspectionAgents(data || [])
+    }).catch(error => {
+      if (active) reportError(error)
+    })
+    return () => { active = false }
+  }, [tab, canScheduleInspections, canUpdateInspections])
 
   useEffect(() => {
     if (!canReadActivities) return
@@ -1046,6 +1085,66 @@ export default function App() {
     if (error) { reportError(error); return false }
     setInspections(current => [toInspection(data), ...current]); setNotice('Résultat d’inspection enregistré dans l’historique.'); return true
   }
+  const saveInspectionAppointment = async appointment => {
+    const scheduledAt = new Date(appointment.scheduledAt)
+    if (!Number.isFinite(scheduledAt.getTime())) {
+      reportError(new Error('La date et l’heure du rendez-vous sont invalides.'))
+      return false
+    }
+    const payload = {
+      pme_id: appointment.pmeId,
+      scheduled_at: scheduledAt.toISOString(),
+      location: appointment.location.trim(),
+      inspector_id: appointment.inspectorId,
+      instructions: appointment.instructions.trim(),
+      status: appointment.status,
+    }
+    const result = appointment.id
+      ? await supabase.from('pme_inspection_appointments').update(payload).eq('id', appointment.id).select().single()
+      : await supabase.from('pme_inspection_appointments').insert(payload).select().single()
+    if (result.error) { reportError(result.error); return false }
+    const saved = toAppointment(result.data)
+    setInspectionAppointments(current => appointment.id
+      ? current.map(item => item.id === saved.id ? saved : item)
+      : [saved, ...current])
+    let historyWarning = ''
+    try {
+      const history = await fetchAll('pme_inspection_appointment_history', 'created_at', false)
+      setInspectionAppointmentHistory(history)
+    } catch (error) {
+      historyWarning = ` Le rendez-vous est enregistré, mais l’historique n’a pas pu être rechargé : ${error.message}`
+    }
+    setNotice(historyWarning || (appointment.id ? 'Rendez-vous d’inspection modifié et historisé.' : 'Inspection planifiée et ajoutée à l’historique.'))
+    return true
+  }
+  const savePhysicalInspectionDocument = async document => {
+    const payload = {
+      pme_id: document.pmeId,
+      document_name: document.name.trim(),
+      is_expected: document.expected,
+      status: document.status,
+      observations: document.observations.trim(),
+      checked_at: document.status === 'ATTENDU' ? null : document.checkedAt || todayKinshasa(),
+      checked_by: document.status === 'ATTENDU' ? null : session.user.id,
+    }
+    const result = document.id
+      ? await supabase.from('pme_physical_inspection_documents').update(payload).eq('id', document.id).select().single()
+      : await supabase.from('pme_physical_inspection_documents').insert({ ...payload, created_by: session.user.id, updated_by: session.user.id }).select().single()
+    if (result.error) { reportError(result.error); return false }
+    const saved = toPhysicalInspectionDocument(result.data)
+    setPhysicalInspectionDocuments(current => document.id
+      ? current.map(item => item.id === saved.id ? saved : item)
+      : [saved, ...current])
+    let historyWarning = ''
+    try {
+      const history = await fetchAll('pme_physical_inspection_document_history', 'created_at', false)
+      setInspectionDocumentHistory(history)
+    } catch (error) {
+      historyWarning = ` Le document est enregistré, mais l’historique n’a pas pu être rechargé : ${error.message}`
+    }
+    setNotice(historyWarning || 'Document physique d’inspection enregistré et historisé.')
+    return true
+  }
   const getDocumentUrl = async doc => {
     const { data, error } = await supabase.storage.from('pme-documents').createSignedUrl(doc.path, 60)
     if (error) { reportError(error); return null }
@@ -1077,6 +1176,15 @@ export default function App() {
       setPmes(current => [...current, { ...pme, archivedAt: null }])
     }
     setDetail(null)
+  }
+  const deletePme = async pme => {
+    if (!canDeletePme || !confirm(`Supprimer définitivement ${pme.nom} ? La suppression sera refusée si des achats, documents ou historiques y sont encore rattachés.`)) return
+    const { error } = await supabase.from('pmes').delete().eq('id', pme.id)
+    if (error) { reportError(error); return }
+    setPmes(current => current.filter(item => item.id !== pme.id))
+    setArchivedPmes(current => current.filter(item => item.id !== pme.id))
+    setDetail(null)
+    setNotice('PME supprimée.')
   }
   const saveAchat = async (a) => {
     const isTrashBag = isTrashBagPurchase(a)
@@ -1259,6 +1367,35 @@ export default function App() {
           inspection.id, inspection.pmeId, pmeNames.get(String(inspection.pmeId)), inspection.result,
           inspection.observations, inspection.date, inspection.inspectorId, inspection.createdAt,
         ])),
+        sheet('Rendez-vous inspections', [
+          'ID', 'PME ID', 'PME', 'Date et heure', 'Lieu', 'Inspecteur ID', 'Statut', 'Instructions',
+          'Créé par', 'Modifié par', 'Créé le', 'Modifié le',
+        ], inspectionAppointments.map(appointment => [
+          appointment.id, appointment.pmeId, pmeNames.get(String(appointment.pmeId)),
+          appointment.scheduledAt, appointment.location, appointment.inspectorId,
+          appointment.status, appointment.instructions, appointment.createdBy,
+          appointment.updatedBy, appointment.createdAt, appointment.updatedAt,
+        ])),
+        sheet('Historique rendez-vous', [
+          'ID', 'Rendez-vous ID', 'PME ID', 'PME', 'Action', 'Avant', 'Après', 'Utilisateur ID', 'Date',
+        ], inspectionAppointmentHistory.map(event => [
+          event.id, event.appointment_id, event.pme_id, pmeNames.get(String(event.pme_id)),
+          event.action, event.before_data, event.after_data, event.actor_id, event.created_at,
+        ])),
+        sheet('Documents physiques', [
+          'ID', 'PME ID', 'PME', 'Document', 'Attendu', 'Statut', 'Observations',
+          'Date de vérification', 'Vérifié par', 'Créé par', 'Modifié par', 'Créé le', 'Modifié le',
+        ], physicalInspectionDocuments.map(document => [
+          document.id, document.pmeId, pmeNames.get(String(document.pmeId)), document.name,
+          document.expected, document.status, document.observations, document.checkedAt,
+          document.checkedBy, document.createdBy, document.updatedBy, document.createdAt, document.updatedAt,
+        ])),
+        sheet('Historique documents physiques', [
+          'ID', 'Document ID', 'PME ID', 'PME', 'Action', 'Avant', 'Après', 'Utilisateur ID', 'Date',
+        ], inspectionDocumentHistory.map(event => [
+          event.id, event.document_id, event.pme_id, pmeNames.get(String(event.pme_id)),
+          event.action, event.before_data, event.after_data, event.actor_id, event.created_at,
+        ])),
         sheet('Historique dossiers', [
           'ID', 'PME ID', 'PME', 'Type événement', 'Ancien statut', 'Nouveau statut', 'Observations',
           'ID document', 'Détails', 'Utilisateur ID', 'Date',
@@ -1423,7 +1560,7 @@ export default function App() {
     </header>
     <div className="app-navigation">
       <nav aria-label="Navigation principale">
-        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(canReadSummary ? [['summary', 'TABLEAU RÉCAPITULATIF']] : []), ...(canArchivePme ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ...(canManageStaff ? [['users', 'Utilisateurs']] : []), ...(canReadActivities ? [['activity', 'Activités']] : []), ...(canReadReports ? [['reports', 'Rapports']] : []), ['cfg', 'Réglages']].map(([k, l]) =>
+        {[['dash', 'Tableau de bord'], ['pme', 'PME AUTORISÉES'], ...(canReadInspections ? [['inspections', 'Inspections PME']] : []), ...(canReadSummary ? [['summary', 'TABLEAU RÉCAPITULATIF']] : []), ...(canArchivePme ? [['archived', 'PME archivées']] : []), ['achats', 'Achats'], ...(canManageStaff ? [['users', 'Utilisateurs']] : []), ...(canReadActivities ? [['activity', 'Activités']] : []), ...(canReadReports ? [['reports', 'Rapports']] : []), ['cfg', 'Réglages']].map(([k, l]) =>
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => { setTab(k); if (k === 'activity') setUnreadActivityCount(0); if (k !== 'pme') { setFStatAut(''); setFStatMin('') } }}>
             {l}{k === 'activity' && unreadActivityCount > 0 && <span className="activity-count">{unreadActivityCount}</span>}
           </button>)}
@@ -1504,8 +1641,10 @@ export default function App() {
           onOpen={setDetail}
           onEdit={pme => setEdit(pme)}
           onArchive={pme => setPmeArchived(pme, true)}
+          onDelete={deletePme}
           canEdit={canEdit}
           canArchive={canArchivePme}
+          canDelete={canDeletePme}
         />
         {canReadActivities && <section className="recent-activity">
           <div className="row"><h2>Activités récentes</h2><button className="btn sec" onClick={() => setTab('activity')}>Consulter le journal</button></div>
@@ -1562,12 +1701,24 @@ export default function App() {
           onOpen={setDetail}
           onEdit={pme => setEdit(pme)}
           onArchive={pme => setPmeArchived(pme, true)}
+          onDelete={deletePme}
           canEdit={canEdit}
           canArchive={canArchivePme}
+          canDelete={canDeletePme}
         />
       </>}
 
-      {tab === 'archived' && canArchivePme && <ArchivedPmeTable rows={archivedPmes} onRestore={pme => setPmeArchived(pme, false)} />}
+      {tab === 'inspections' && canReadInspections && <InspectionPlanning
+        appointments={inspectionAppointments}
+        pmes={pmes}
+        agents={inspectionAgents}
+        history={inspectionAppointmentHistory}
+        canSchedule={canScheduleInspections}
+        canUpdate={canUpdateInspections}
+        onSave={saveInspectionAppointment}
+      />}
+
+      {tab === 'archived' && canArchivePme && <ArchivedPmeTable rows={archivedPmes} onRestore={pme => setPmeArchived(pme, false)} onDelete={deletePme} canDelete={canDeletePme} />}
 
       {tab === 'summary' && canReadSummary && <section className="pme-summary">
         <div className="row summary-heading">
@@ -1680,7 +1831,7 @@ export default function App() {
       onOpenAttachment={openMoratoriumAttachment}
       onClose={() => setMoratoriumHistoryPme(null)}
     />}
-      {detail && (() => { const r = rows.find(x => x.id === detail.id); if (!r) return null; const pmeDocs = documents.filter(d => d.pmeId === r.id); const pmeInspections = inspections.filter(x => x.pmeId === r.id); const dossierEvents = dossierHistory.filter(h => h.pme_id === r.id); const authorizationEvents = authorizationHistory.filter(h => h.pme_id === r.id); const docStats = documentStats(r.id); return (
+      {detail && (() => { const r = rows.find(x => x.id === detail.id); if (!r) return null; const pmeDocs = documents.filter(d => d.pmeId === r.id); const pmeInspections = inspections.filter(x => x.pmeId === r.id); const pmeAppointments = inspectionAppointments.filter(x => String(x.pmeId) === String(r.id)); const appointmentEvents = inspectionAppointmentHistory.filter(h => String(h.pme_id) === String(r.id)); const dossierEvents = dossierHistory.filter(h => h.pme_id === r.id); const authorizationEvents = authorizationHistory.filter(h => h.pme_id === r.id); const docStats = documentStats(r.id); return (
       <div className="modal" onClick={() => setDetail(null)}><div className={`box detail${isAuthorizationExpired(r.authorizationStatus, r.authorizationExpiryDate) ? ' pme-expired-detail' : ''}`} onClick={e => e.stopPropagation()}>
         <h2>PME n° {r.numero} — {r.nom} <small>({r.type || '—'})</small></h2>
         <div className="status-summary"><div><span>STATUT DU DOSSIER PME</span><Tag s={dossierTag(r.dossierStatus)} /></div><div><span>STATUT D'AUTORISATION REGEDEK</span><Tag s={authTag(r.authorizationStatus, r.authorizationExpiryDate)} /></div></div>
@@ -1703,6 +1854,27 @@ export default function App() {
           <strong>Observations :</strong> {r.dossierObservations || '—'} · <strong>Mis à jour :</strong> {r.dossierUpdatedAt ? new Date(r.dossierUpdatedAt).toLocaleString('fr-FR') : '—'} · <strong>Agent :</strong> {r.dossierUpdatedBy || '—'}</p>
         {canManageDossier && <DossierEditor pme={r} onSave={patch => saveDossier(r.id, patch)} />}
         <DocumentManager documents={pmeDocs} canManage={canManageDocuments} canUpload={hasPermission('document.upload')} canReview={canReviewDocuments} canDelete={canDeleteDocuments} onSave={saveDocument} onReview={reviewDocument} onOpen={openDocument} onPreview={getDocumentUrl} onDelete={deleteDocument} onUpdate={updateDocumentObservations} />
+        <PhysicalInspectionDocumentManager
+          pmeId={r.id}
+          documents={physicalInspectionDocuments.filter(document => String(document.pmeId) === String(r.id))}
+          history={inspectionDocumentHistory}
+          canManage={canManagePhysicalInspectionDocuments}
+          onSave={savePhysicalInspectionDocument}
+        />
+        <h2 className="subhead">Historique des rendez-vous d’inspection</h2>
+        {pmeAppointments.length ? <ul className="history-list">{[...pmeAppointments].sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt)).map(appointment => <li key={appointment.id}>
+          <strong>{INSPECTION_APPOINTMENT_LABELS[appointment.status] || appointment.status}</strong>
+          {' · '}{new Date(appointment.scheduledAt).toLocaleString('fr-FR')}
+          {' · lieu : '}{appointment.location}
+          {' · inspecteur : '}{appointment.inspectorId}
+          {appointment.instructions && ` · ${appointment.instructions}`}
+        </li>)}</ul> : <p>Aucun rendez-vous d’inspection enregistré pour cette PME.</p>}
+        {appointmentEvents.filter(event => event.action === 'MODIFICATION').length > 0 && <ul className="history-list">{appointmentEvents.filter(event => event.action === 'MODIFICATION').map(event => <li key={event.id}>
+          <strong>Rendez-vous modifié</strong>
+          {' · '}{new Date(event.created_at).toLocaleString('fr-FR')}
+          {' · utilisateur '}{event.actor_id || '—'}
+          {event.after_data?.status && ` · ${INSPECTION_APPOINTMENT_LABELS[event.after_data.status] || event.after_data.status}`}
+        </li>)}</ul>}
         <h2 className="subhead">Historique du dossier et des documents</h2>
         {dossierEvents.length ? <ul className="history-list">{dossierEvents.map(h => <li key={h.id}><strong>{h.event_type}</strong> · {h.old_status || '—'} → {h.new_status || '—'} · {new Date(h.created_at).toLocaleString('fr-FR')} · utilisateur {h.actor_id || 'système'}{h.observations ? ` · ${h.observations}` : ''}</li>)}</ul> : <p>Aucun événement documentaire enregistré.</p>}
         <h2 className="subhead">Historique des décisions d'autorisation</h2>
@@ -1721,6 +1893,7 @@ export default function App() {
         </section>
         <div className="row">
           {canArchivePme && <button className="btn red" onClick={() => setPmeArchived(r, true)}>Archiver la PME</button>}
+          {canDeletePme && <button className="btn red" onClick={() => deletePme(r)}>Supprimer la PME</button>}
           {canCreatePurchase && <button className="btn sec" onClick={() => { setDetail(null); setAchatFor({ pmeId: r.id, date: new Date().toISOString().slice(0, 10), qte: '' }) }}>+ Achat</button>}
           {canEdit && <button className="btn" onClick={() => { setDetail(null); setEdit(pmes.find(p => p.id === r.id)) }}>Modifier</button>}
         </div>
@@ -1835,7 +2008,7 @@ function PasswordRecovery({ busy, notice, onSave }) {
   </section></main>
 }
 
-function Table({ rows, onOpen, onEdit, onArchive, canEdit, canArchive }) {
+function Table({ rows, onOpen, onEdit, onArchive, onDelete, canEdit, canArchive, canDelete }) {
   return <div className="tw"><table className="pme-table"><thead><tr>
     <th>N° PME</th><th>Entreprise</th><th>Catégorie</th><th>Statut du dossier</th><th>Autorisation REGEDEK</th><th>Décision réglementaire</th><th>Échéance REGEDEK historique</th><th>Statut ministériel</th><th>Expiration ministérielle</th><th>Téléphone</th><th>Actions</th>
   </tr></thead><tbody>
@@ -1855,6 +2028,7 @@ function Table({ rows, onOpen, onEdit, onArchive, canEdit, canArchive }) {
           <button className="btn sec" onClick={(e) => { e.stopPropagation(); onOpen(r) }}>Voir</button>
           {canEdit && <button className="btn" onClick={(e) => { e.stopPropagation(); onEdit(r) }}>Modifier</button>}
           {canArchive && <button className="btn red" onClick={(e) => { e.stopPropagation(); onArchive(r) }}>Archiver</button>}
+          {canDelete && <button className="btn red" onClick={(e) => { e.stopPropagation(); onDelete(r) }}>Supprimer</button>}
         </div>
       </td>
     </tr>)}
@@ -1862,7 +2036,7 @@ function Table({ rows, onOpen, onEdit, onArchive, canEdit, canArchive }) {
   </tbody></table></div>
 }
 
-function ArchivedPmeTable({ rows, onRestore }) {
+function ArchivedPmeTable({ rows, onRestore, onDelete, canDelete }) {
   return <section>
     <h2>PME archivées</h2>
     <p>Les PME archivées sont retirées du registre actif, mais leurs achats, documents et historiques sont conservés.</p>
@@ -1874,7 +2048,7 @@ function ArchivedPmeTable({ rows, onRestore }) {
         <td data-label="Catégorie">{pme.type || '—'}</td>
         <td data-label="Référence autorisation">{pme.authorizationReference || pme.numAut || '—'}</td>
         <td data-label="Date d’archivage">{pme.archivedAt ? new Date(pme.archivedAt).toLocaleString('fr-FR') : '—'}</td>
-        <td data-label="Action"><button className="btn sec" onClick={() => onRestore(pme)}>Restaurer</button></td>
+        <td data-label="Action"><div className="row"><button className="btn sec" onClick={() => onRestore(pme)}>Restaurer</button>{canDelete && <button className="btn red" onClick={() => onDelete(pme)}>Supprimer</button>}</div></td>
       </tr>)}
       {!rows.length && <tr><td colSpan="5">Aucune PME archivée.</td></tr>}
     </tbody></table></div>
@@ -1948,6 +2122,145 @@ function InspectionForm({ onSave }) {
     </div>
     <button className="btn" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer le rapport d’inspection'}</button>
   </form>
+}
+
+function InspectionPlanning({ appointments, pmes, agents, history, canSchedule, canUpdate, onSave }) {
+  const emptyForm = () => ({
+    pmeId: '',
+    scheduledAt: '',
+    location: '',
+    inspectorId: '',
+    instructions: '',
+    status: 'PLANIFIEE',
+  })
+  const [form, setForm] = useState(emptyForm)
+  const [busy, setBusy] = useState(false)
+  const pmeNames = new Map(pmes.map(pme => [String(pme.id), pme.nom]))
+  const agentNames = new Map(agents.map(agent => [agent.user_id, agent.email || agent.user_id]))
+  const startEdit = appointment => setForm({
+    id: appointment.id,
+    pmeId: String(appointment.pmeId),
+    scheduledAt: localDateTimeInput(appointment.scheduledAt),
+    location: appointment.location,
+    inspectorId: appointment.inspectorId,
+    instructions: appointment.instructions,
+    status: appointment.status,
+  })
+  const submit = async event => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      if (await onSave(form)) setForm(emptyForm())
+    } finally {
+      setBusy(false)
+    }
+  }
+  const statusClass = { PLANIFIEE: 'bleu', EFFECTUEE: 'vert', REPORTEE: 'orange', ANNULEE: 'gris' }
+  return <section className="inspection-planning">
+    <h2>Inspections PME</h2>
+    <p>Planification des rendez-vous, suivi des statuts et historique des modifications. Les rapports de visite restent consultables dans chaque dossier PME.</p>
+    {(canSchedule || (canUpdate && form.id)) && <form className="admin-editor" onSubmit={submit}>
+      <h3>{form.id ? 'Modifier ou reporter un rendez-vous' : 'Planifier un rendez-vous d’inspection'}</h3>
+      <div className="grid">
+        <div><label>PME à inspecter</label><select value={form.pmeId} disabled={Boolean(form.id)} onChange={event => setForm(current => ({ ...current, pmeId: event.target.value }))} required>
+          <option value="">Sélectionner une PME</option>
+          {pmes.map(pme => <option key={pme.id} value={pme.id}>{pme.nom} · PME n° {pme.numero}</option>)}
+        </select></div>
+        <div><label>Date et heure</label><input type="datetime-local" value={form.scheduledAt} onChange={event => setForm(current => ({ ...current, scheduledAt: event.target.value }))} required /></div>
+        <div><label>Lieu de l’inspection</label><input value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} required /></div>
+        <div><label>Agent inspecteur</label><select value={form.inspectorId} onChange={event => setForm(current => ({ ...current, inspectorId: event.target.value }))} required>
+          <option value="">Désigner un agent</option>
+          {form.inspectorId && !agentNames.has(form.inspectorId) && <option value={form.inspectorId}>{form.inspectorId}</option>}
+          {agents.map(agent => <option key={agent.user_id} value={agent.user_id}>{agent.email} · {agent.role === 'admin' ? 'Administrateur' : 'Agent'}</option>)}
+        </select></div>
+        <div><label>Statut</label><select value={form.status} onChange={event => setForm(current => ({ ...current, status: event.target.value }))}>{INSPECTION_APPOINTMENT_STATUSES.map(status => <option key={status} value={status}>{INSPECTION_APPOINTMENT_LABELS[status]}</option>)}</select></div>
+        <div className="full"><label>Observations ou instructions</label><textarea rows="3" value={form.instructions} onChange={event => setForm(current => ({ ...current, instructions: event.target.value }))} /></div>
+      </div>
+      <div className="row">
+        {form.id && <button className="btn sec" type="button" onClick={() => setForm(emptyForm())}>Annuler la modification</button>}
+        <button className="btn" disabled={busy || (!form.id && !canSchedule) || (form.id && !canUpdate)}>{busy ? 'Enregistrement…' : form.id ? 'Enregistrer la modification' : 'Planifier l’inspection'}</button>
+      </div>
+    </form>}
+    <h3>Rendez-vous et historique des PME</h3>
+    {appointments.length ? <div className="tw"><table className="pme-table"><thead><tr>
+      <th>PME</th><th>Date et heure</th><th>Lieu</th><th>Agent inspecteur</th><th>Statut</th><th>Instructions</th><th>Action</th>
+    </tr></thead><tbody>
+      {[...appointments].sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt)).map(appointment => <tr key={appointment.id}>
+        <td data-label="PME">{pmeNames.get(String(appointment.pmeId)) || `PME n° ${appointment.pmeId}`}</td>
+        <td data-label="Date et heure">{new Date(appointment.scheduledAt).toLocaleString('fr-FR')}</td>
+        <td data-label="Lieu">{appointment.location}</td>
+        <td data-label="Agent inspecteur">{agentNames.get(appointment.inspectorId) || appointment.inspectorId}</td>
+        <td data-label="Statut"><Tag s={{ label: INSPECTION_APPOINTMENT_LABELS[appointment.status] || appointment.status, cls: statusClass[appointment.status] || 'gris' }} /></td>
+        <td data-label="Instructions">{appointment.instructions || '—'}</td>
+        <td data-label="Action">{canUpdate && <button className="btn sec" onClick={() => startEdit(appointment)}>Modifier / reporter</button>}</td>
+      </tr>)}
+    </tbody></table></div> : <p>Aucun rendez-vous d’inspection planifié.</p>}
+    <h3>Historique des planifications</h3>
+    {history.length ? <ul className="history-list">{history.map(event => <li key={event.id}>
+      <strong>{event.action === 'PLANIFICATION' ? 'Rendez-vous planifié' : 'Rendez-vous modifié'}</strong>
+      {' · '}{pmeNames.get(String(event.pme_id)) || `PME n° ${event.pme_id}`}
+      {' · '}{new Date(event.created_at).toLocaleString('fr-FR')}
+      {' · utilisateur '}{event.actor_id || '—'}
+      {event.after_data?.status && ` · ${INSPECTION_APPOINTMENT_LABELS[event.after_data.status] || event.after_data.status}`}
+    </li>)}</ul> : <p>Aucune modification enregistrée.</p>}
+  </section>
+}
+
+function PhysicalInspectionDocumentManager({ pmeId, documents, history, canManage, onSave }) {
+  const newForm = () => ({ name: '', expected: true, status: 'ATTENDU', observations: '', checkedAt: todayKinshasa() })
+  const [form, setForm] = useState(newForm)
+  const [busy, setBusy] = useState(false)
+  const startEdit = document => setForm({
+    id: document.id,
+    name: document.name,
+    expected: document.expected,
+    status: document.status,
+    observations: document.observations,
+    checkedAt: document.checkedAt ? document.checkedAt.slice(0, 10) : todayKinshasa(),
+  })
+  const submit = async event => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      if (await onSave({ ...form, pmeId })) setForm(newForm())
+    } finally {
+      setBusy(false)
+    }
+  }
+  const pmeHistory = history.filter(event => String(event.pme_id) === String(pmeId))
+  const statusClass = { ATTENDU: 'bleu', PRESENTE: 'vert', MANQUANT: 'rouge', NON_CONFORME: 'orange' }
+  return <section className="documents-section physical-inspection-documents">
+    <h2 className="subhead">Documents physiques présentés pour inspection</h2>
+    <p>Enregistre les pièces attendues et leur vérification pendant la visite. Toute modification est historisée avec l’utilisateur connecté.</p>
+    {canManage && <form className="document-upload" onSubmit={submit}>
+      <label>Document physique<input list={`physical-document-suggestions-${pmeId}`} value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} required />
+        <datalist id={`physical-document-suggestions-${pmeId}`}>{PHYSICAL_DOCUMENT_SUGGESTIONS.map(name => <option key={name} value={name} />)}</datalist>
+      </label>
+      <label className="check"><input type="checkbox" checked={form.expected} onChange={event => setForm(current => ({ ...current, expected: event.target.checked }))} /> Document attendu</label>
+      <label>État du document<select value={form.status} onChange={event => setForm(current => ({ ...current, status: event.target.value }))}>{PHYSICAL_DOCUMENT_STATUSES.map(status => <option key={status} value={status}>{PHYSICAL_DOCUMENT_LABELS[status]}</option>)}</select></label>
+      <label>Date de vérification<input type="date" value={form.checkedAt} disabled={form.status === 'ATTENDU'} onChange={event => setForm(current => ({ ...current, checkedAt: event.target.value }))} /></label>
+      <label>Observations de l’agent inspecteur<input value={form.observations} onChange={event => setForm(current => ({ ...current, observations: event.target.value }))} /></label>
+      <div className="row">
+        {form.id && <button className="btn sec" type="button" onClick={() => setForm(newForm())}>Annuler</button>}
+        <button className="btn" disabled={busy}>{busy ? 'Enregistrement…' : form.id ? 'Mettre à jour le document' : 'Ajouter le document physique'}</button>
+      </div>
+    </form>}
+    {documents.length ? <div className="document-list">{documents.map(document => <article className="document-item" key={document.id}>
+      <div><strong>{document.name}</strong><span>{document.expected ? 'Attendu' : 'Non requis'} · <Tag s={{ label: PHYSICAL_DOCUMENT_LABELS[document.status] || document.status, cls: statusClass[document.status] || 'gris' }} /></span>
+        {document.checkedAt && <small>Vérifié le {fmt(document.checkedAt)} · utilisateur {document.checkedBy || '—'}</small>}
+        {document.observations && <small>Observation : {document.observations}</small>}
+      </div>
+      {canManage && <button className="btn sec" onClick={() => startEdit(document)}>Modifier</button>}
+    </article>)}</div> : <p>Aucun document physique n’a été enregistré pour cette PME.</p>}
+    <h3>Historique des vérifications</h3>
+    {pmeHistory.length ? <ul className="history-list">{pmeHistory.map(event => <li key={event.id}>
+      <strong>{event.action === 'AJOUT' ? 'Document ajouté' : 'Document mis à jour'}</strong>
+      {' · '}{event.after_data?.document_name || 'Document physique'}
+      {event.after_data?.status && ` · ${PHYSICAL_DOCUMENT_LABELS[event.after_data.status] || event.after_data.status}`}
+      {' · '}{new Date(event.created_at).toLocaleString('fr-FR')}
+      {' · utilisateur '}{event.actor_id || '—'}
+    </li>)}</ul> : <p>Aucune vérification enregistrée.</p>}
+  </section>
 }
 
 function DocumentManager({ documents, canManage, canUpload, canReview, canDelete, onSave, onReview, onOpen, onPreview, onDelete, onUpdate }) {
@@ -2042,12 +2355,14 @@ function StaffManager({ users, busy, onRoleChange, onPermissionChange, onInvite 
   const [inviteRole, setInviteRole] = useState('agent')
   const roleLabels = { admin: 'Super Admin', agent: 'Opérateur', reader: 'Lecture seule', custom: 'Personnalisé', disabled: 'Désactivé' }
   const permissionLabels = [
-    ['pme.create', 'Créer une PME'], ['pme.update', 'Modifier une PME'], ['pme.archive', 'Archiver/restaurer une PME'],
+    ['pme.create', 'Créer une PME'], ['pme.update', 'Modifier une PME'],
     ['pme.dossier.manage', 'Gérer le dossier'], ['pme.authorization.manage', 'Gérer autorisations/agréments'],
     ['purchase.create', 'Créer un achat'], ['purchase.update', 'Modifier un achat'], ['purchase.delete', 'Supprimer un achat'],
     ['document.upload', 'Importer des documents'], ['document.update', 'Modifier les documents'],
     ['document.review', 'Valider/rejeter les documents'], ['document.delete', 'Supprimer les documents'],
-    ['inspection.create', 'Créer une inspection'], ['settings.update', 'Modifier les paramètres'],
+    ['inspection.create', 'Enregistrer un rapport d’inspection'], ['inspection.schedule', 'Planifier une inspection'],
+    ['inspection.update', 'Modifier ou reporter une inspection'], ['inspection.documents.manage', 'Gérer les documents physiques d’inspection'],
+    ['settings.update', 'Modifier les paramètres'],
     ['reports.read', 'Télécharger les rapports'], ['activity.read', 'Consulter les activités'],
   ]
   const invite = async event => {
